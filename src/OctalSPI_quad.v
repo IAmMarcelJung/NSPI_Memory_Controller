@@ -59,6 +59,8 @@ module OctalSPI_quad #(
 
     // constants
     localparam BUS_WIDTH = 32;
+    localparam integer NUM_CHIPS = 4;  // chips in parallel, one byte lane each
+    localparam integer CHIP_DATA_WIDTH = 8;  // DQ lines per chip (octal SPI)
 
     // Pin tristate stuff
     reg                    last_word_reg;
@@ -306,16 +308,16 @@ module OctalSPI_quad #(
 
         case (state_reg)
             SEND_OPCODE: begin
-                for (channel = 0; channel < 4; channel = channel + 1) begin
-                    for (i = 0; i < BUS_WIDTH; i = i + 1)
-                    data_out_nxt[(channel*8)+i] = i_opcode[i[2:0]];
+                for (channel = 0; channel < NUM_CHIPS; channel = channel + 1) begin
+                    for (i = 0; i < CHIP_DATA_WIDTH; i = i + 1)
+                    data_out_nxt[(channel*CHIP_DATA_WIDTH)+i] = i_opcode[i[2:0]];
                 end
             end
 
             SEND_ADDRESS: begin
-                for (channel = 0; channel < 4; channel = channel + 1) begin
-                    for (i = 0; i < BUS_WIDTH; i = i + 1)
-                    data_out_nxt[(channel*8)+i] = chip_address[{count_reg[1:0], i[2:0]}];
+                for (channel = 0; channel < NUM_CHIPS; channel = channel + 1) begin
+                    for (i = 0; i < CHIP_DATA_WIDTH; i = i + 1)
+                    data_out_nxt[(channel*CHIP_DATA_WIDTH)+i] = chip_address[{count_reg[1:0], i[2:0]}];
                 end
                 is_transfer_front_padded_nxt = i_address[WORD_LENGTH];
                 if (i_register_write & count_reg == 0) need_next_word_nxt = 1'b1;
@@ -342,8 +344,8 @@ module OctalSPI_quad #(
                 end else begin
                     is_transfer_front_padded_nxt = 0;
                     last_word_nxt = i_last_word;
-                    for (channel = 0; channel < 4; channel = channel + 1) begin
-                        data_out_nxt[(channel*8)+:8] = i_data_write[(channel*8)+:8];
+                    for (channel = 0; channel < NUM_CHIPS; channel = channel + 1) begin
+                        data_out_nxt[(channel*CHIP_DATA_WIDTH)+:CHIP_DATA_WIDTH] = i_data_write[(channel*CHIP_DATA_WIDTH)+:CHIP_DATA_WIDTH];
                         data_strobe_out_nxt[channel] = i_data_word_mask[channel];
                     end
                 end
