@@ -414,3 +414,6 @@ module AXIInterface #(
 
 
 endmodule
+
+// AXIInterface sets `default_nettype none, restore the default for the files read after this one
+`default_nettype wire
