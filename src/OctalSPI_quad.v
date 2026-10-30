@@ -14,7 +14,11 @@ module OctalSPI_quad #(
     parameter ADDRESS_LENGTH = 32,  // address is always 32 bit long
     parameter DATA_WIDTH = 32,
     parameter STRB_WIDTH = DATA_WIDTH / 8,
-    parameter CHIP_TYPE = -1  // 1 is Infineon, 2 is APMemory
+    parameter CHIP_TYPE = -1,  // 1 is Infineon, 2 is APMemory
+    // 0: bus clock from a posedge register, the data changes together with the clock edge (edge aligned)
+    // 1: bus clock from a negedge register half a clk period earlier, the data is centre aligned
+    //    (half a clk period setup and hold), read data is captured on the negedge as well
+    parameter BUS_CLOCK_NEGEDGE = 0
 ) (
     input clk,
     input reset_neg,
@@ -25,6 +29,7 @@ module OctalSPI_quad #(
     input                       i_config_read_data,
     input                       i_config_write_data,
     input                       i_config_write_address,
+    input                       i_register_write,  // APMemory mode register write: latency 1
     input                       i_last_word,
     input  [    STRB_WIDTH-1:0] i_data_word_mask,
     input  [    DATA_WIDTH-1:0] i_data_write,
@@ -75,7 +80,11 @@ module OctalSPI_quad #(
     reg                    has_latency_nxt;
 
     assign o_data = data_out_reg;
-    assign data_in = i_data;
+    // read data: with the negedge bus clock the memory sends half a clk period earlier, capture it on the negedge,
+    // so the posedge logic sees it at the same time as with the posedge bus clock
+    reg [BUS_WIDTH-1 : 0] data_in_neg_reg;
+    always @(negedge clk) data_in_neg_reg <= i_data;
+    assign data_in = BUS_CLOCK_NEGEDGE ? data_in_neg_reg : i_data;
     assign o_data_output_enable = {4{en_data_out_reg}};
 
     // Bus Clock
@@ -110,7 +119,7 @@ module OctalSPI_quad #(
     reg                          need_next_word_reg;
     reg                          need_buffer_word_nxt;
     reg                          need_buffer_word_reg;
-    wire    [ADDRESS_LENGTH-1:0] word_alligned_address;
+    wire    [ADDRESS_LENGTH-1:0] chip_address;
 
     assign o_data_read = data_read_reg;
 
@@ -124,7 +133,8 @@ module OctalSPI_quad #(
     // the first latency already begins after the sample point of the upper address
     // therefore we have to subtract one cycle (-2) from the latency
     localparam integer NUM_SHORT_LATENCY_CYCLES = (CHIP_TYPE == 1) ? LATENCY_CYCLES + 2 : LATENCY_CYCLES - 2;   // ToDo think about a better switch (issue #12)
-    localparam integer NUM_LONG_LATENCY_CYCLES = LATENCY_CYCLES * 2 + 2;
+    // APMemory runs with fixed read latency (MR0[5] = 1, set by the controller after reset): 2 * LC for every read
+    localparam integer NUM_LONG_LATENCY_CYCLES = (CHIP_TYPE == 1) ? LATENCY_CYCLES * 2 + 2 : LATENCY_CYCLES * 2 - 2;
     //localparam integer READ_LATENCY_IN_CYCLE = 1; // (issue #15)
 
     // ToDo: why was this in en_data_strobe?: | state_reg == WAIT_LATENCY 
@@ -133,14 +143,27 @@ module OctalSPI_quad #(
     assign data_strobe_in = i_data_strobe[0];   // ToDo: this is not perfect, because the chips may have different delays - better set them to fixed delay (issue #owas)
     assign o_data_strobe_output_enable = {4{en_data_strobe}};
 
-    assign o_bus_clock = bus_clock_p2_reg;
-    assign o_bus_clock_neg = ~bus_clock_p2_reg;
+    // bus_clock_neg_reg is bus_clock_p2_reg half a clk earlier: it takes bus_clock_p2_nxt on the negedge before
+    // bus_clock_p2_reg takes it on the posedge (same edges, also at the start and end of a transaction)
+    reg bus_clock_neg_reg;
+    always @(negedge clk) begin
+        if (~reset_neg) bus_clock_neg_reg <= 1'b0;
+        else bus_clock_neg_reg <= bus_clock_p2_nxt;
+    end
+    wire bus_clock_out = BUS_CLOCK_NEGEDGE ? bus_clock_neg_reg : bus_clock_p2_reg;
+    assign o_bus_clock = bus_clock_out;
+    assign o_bus_clock_neg = ~bus_clock_out;
     assign o_finish = (state_reg == FINISH);
     assign o_recieved_next_word = recieved_next_word_reg;
     assign o_need_next_word = need_next_word_reg;
 
     localparam WORD_LENGTH = $clog2(STRB_WIDTH);
-    assign word_alligned_address = {i_address[ADDRESS_LENGTH-1 : WORD_LENGTH], {WORD_LENGTH{1'b0}}};
+    // Every AXI word holds one byte per chip, so AXI byte address A is byte A / 4 in every chip.
+    // A DDR transfer always moves a pair of bytes per chip, so the transfer starts on the even byte
+    // (A / 8 pairs) and the first byte is padded when A / 4 is odd (is_transfer_front_padded).
+    // APMemory is byte addressed, the Infineon model counts 16 bit words.
+    assign chip_address = (CHIP_TYPE == 1) ? {{(WORD_LENGTH+1){1'b0}}, i_address[ADDRESS_LENGTH-1 : WORD_LENGTH+1]} :
+                                             {{WORD_LENGTH{1'b0}}, i_address[ADDRESS_LENGTH-1 : WORD_LENGTH+1], 1'b0};
     reg is_transfer_front_padded_nxt;
     reg is_transfer_front_padded_reg;
 
@@ -196,7 +219,7 @@ module OctalSPI_quad #(
                     if (i_config_write_address) begin
                         count_nxt = ADDRESS_CYCLES - 1;
                         state_nxt = SEND_ADDRESS;
-                        has_latency_nxt = (CHIP_TYPE == 1) ? data_strobe_in : 1'b0;     // ToDo change (issue #12)
+                        has_latency_nxt = (CHIP_TYPE == 1) ? data_strobe_in : i_config_read_data;     // ToDo change (issue #12)
                     end else state_nxt = CS_HIGH;
                 end
             end
@@ -209,6 +232,12 @@ module OctalSPI_quad #(
                     else count_nxt = NUM_SHORT_LATENCY_CYCLES + latency_offset;
 
                     state_nxt = WAIT_LATENCY;
+
+                    // register writes have latency 1: the data follows the address directly
+                    if (i_register_write) begin
+                        count_nxt = 1;
+                        state_nxt = SEND_DATA;
+                    end
                 end
             end
 
@@ -286,9 +315,10 @@ module OctalSPI_quad #(
             SEND_ADDRESS: begin
                 for (channel = 0; channel < 4; channel = channel + 1) begin
                     for (i = 0; i < BUS_WIDTH; i = i + 1)
-                    data_out_nxt[(channel*8)+i] = word_alligned_address[{count_reg[1:0], i[2:0]}];
+                    data_out_nxt[(channel*8)+i] = chip_address[{count_reg[1:0], i[2:0]}];
                 end
                 is_transfer_front_padded_nxt = i_address[WORD_LENGTH];
+                if (i_register_write & count_reg == 0) need_next_word_nxt = 1'b1;
             end
 
             // this could also be swapped to an combinatorial check for the state of SEND_DATA to assign to the output
@@ -299,6 +329,7 @@ module OctalSPI_quad #(
 
             RECEIVE_DATA: begin
                 last_word_nxt = i_last_word;
+                is_transfer_front_padded_nxt = 0;
             end
 
             SEND_DATA: begin
@@ -342,7 +373,8 @@ module OctalSPI_quad #(
 
             if (state_reg == RECEIVE_DATA) begin
                 data_read_reg <= data_in;
-                recieved_next_word_reg <= 1'b1;
+                // the first byte of a transfer starting on an odd address is padding, drop it
+                recieved_next_word_reg <= ~is_transfer_front_padded_reg;
             end
         end
     end

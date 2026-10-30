@@ -53,6 +53,7 @@ module AXIInterface #(
     input  wire                  i_busy,
     output wire                  o_last_word,
     output wire                  o_write_enable,
+    output wire                  o_write_data_valid,  // wvalid of the beat on o_write_data
     output wire                  o_start_transaction,
     output wire [ADDR_WIDTH-1:0] o_address,
     output wire [DATA_WIDTH-1:0] o_write_data,
@@ -124,6 +125,7 @@ module AXIInterface #(
 
     reg [0:0] read_state_reg;
     reg [0:0] read_state_next;
+    reg read_drop_reg, read_drop_next;  // a word could not be taken, ignore the rest until the restart
 
     // Write FSM
     localparam [1:0] WRITE_STATE_IDLE = 2'd0;
@@ -159,7 +161,9 @@ module AXIInterface #(
     reg s_axi_rvalid_pipe_reg;
 
     assign s_axi_awready = s_axi_awready_reg;
-    assign s_axi_wready = i_write_word_ready; // the signal has to be passed through immediately from the controller to the axi interface - otherwise we have a clock cycle delay
+    // the signal has to be passed through immediately from the controller to the axi interface - otherwise we have a clock cycle delay
+    // only during the burst: the controller also requests words after the last beat, these must not take the beats of the next burst
+    assign s_axi_wready = i_write_word_ready & (write_state_reg == WRITE_STATE_BURST);
     assign s_axi_bid = s_axi_bid_reg;
     assign s_axi_bresp = 2'b00;
     assign s_axi_bvalid = s_axi_bvalid_reg;
@@ -170,19 +174,43 @@ module AXIInterface #(
     assign s_axi_rlast = s_axi_rlast_reg;//PIPELINE_OUTPUT ? s_axi_rlast_pipe_reg : s_axi_rlast_reg;
     assign s_axi_rvalid = PIPELINE_OUTPUT ? s_axi_rvalid_pipe_reg : s_axi_rvalid_reg;
 
-    assign o_write_enable = (s_axi_awvalid | write_state_reg != WRITE_STATE_IDLE);
-    assign o_address = (s_axi_awvalid | write_state_reg != WRITE_STATE_IDLE) ? write_addr_next : read_addr_next;
+    // select the write side on the write address handshake, not only on awvalid - otherwise an awvalid during a
+    // read handshake would turn the read into a write
+    wire write_selected = (s_axi_awready & s_axi_awvalid) | (write_state_reg != WRITE_STATE_IDLE);
+    assign o_write_enable = write_selected;
+    assign o_address = write_selected ? write_addr_next : read_addr_next;
     assign o_write_data = s_axi_wdata;
-    assign o_start_transaction = ((s_axi_awready && s_axi_awvalid) | (s_axi_arready && s_axi_arvalid));
+    // A burst is split into several memory transactions when the master stalls (WVALID low / RREADY low) or the
+    // memory needs CE# high (tCEM). The controller then ends the memory transaction and goes idle while the AXI
+    // burst is still running, it is restarted here at the address of the next beat.
+    wire read_can_load = ~s_axi_rvalid_reg | s_axi_rready;  // output register free in this cycle
+    wire restart_write = (write_state_reg == WRITE_STATE_BURST) & ~i_busy & s_axi_wvalid;
+    wire restart_read = (read_state_reg == READ_STATE_BURST) & ~i_busy & read_can_load;
+    assign o_start_transaction = (s_axi_awready && s_axi_awvalid) | (s_axi_arready && s_axi_arvalid) |
+                                 restart_write | restart_read;
+    assign o_write_data_valid = s_axi_wvalid;
+
+    // Only one transaction at a time: accept a new address only when both FSMs are idle, the SPI is not busy and
+    // no transaction starts in this cycle. Writes win if both are valid. The ready is registered, so it is only
+    // raised while the master shows a valid address.
+    wire accept_any = ~i_busy & ~o_start_transaction & (write_state_reg == WRITE_STATE_IDLE) &
+                      (read_state_reg == READ_STATE_IDLE);
+    wire accept_write = accept_any & s_axi_awvalid & s_axi_wvalid;  // the controller takes the first beat with the address
+    wire accept_read = accept_any & s_axi_arvalid & ~s_axi_awvalid;
 
     wire read_last_word;
-    assign read_last_word = (s_axi_rlast_reg | (s_axi_arvalid & s_axi_arlen == 0));
+    // on the address handshake rlast still belongs to the previous burst, so use arlen there
+    // the controller stops after the beat flagged as last: the real last beat, or the current one if it cannot be
+    // taken (output register full) or was already dropped - the rest is read again after a restart
+    assign read_last_word = (s_axi_arready & s_axi_arvalid) ? (s_axi_arlen == 0) :
+                            restart_read ? (read_count_reg == 0) :
+                            (read_count_reg == 0) | read_drop_reg | (i_read_word_ready & ~read_can_load);
     wire write_last_word;
     assign write_last_word = s_axi_wlast;
 
     // if we are in the read state or if we recieve a read command, pass the write data to the controller
     // otherwise pass the read data
-    assign o_last_word = (s_axi_awvalid | write_state_reg != WRITE_STATE_IDLE) ? write_last_word : read_last_word;
+    assign o_last_word = write_selected ? write_last_word : read_last_word;
 
     always @* begin
         write_state_next = WRITE_STATE_IDLE;
@@ -199,7 +227,7 @@ module AXIInterface #(
 
         case (write_state_reg)
             WRITE_STATE_IDLE: begin
-                s_axi_awready_next = ~i_busy;
+                s_axi_awready_next = accept_write;
 
                 // reviece address etc. of the transaction
                 if (s_axi_awready && s_axi_awvalid) begin
@@ -225,24 +253,18 @@ module AXIInterface #(
                     if (write_count_reg > 0) begin
                         write_state_next = WRITE_STATE_BURST;
                     end else begin
-                        if (s_axi_bready || !s_axi_bvalid) begin
-                            s_axi_bid_next = write_id_reg;
-                            s_axi_bvalid_next = 1'b1;
-                            s_axi_awready_next = 1'b1;
-                            write_state_next = WRITE_STATE_IDLE;
-                        end else begin
-                            write_state_next = WRITE_STATE_RESP;
-                        end
+                        // the response is sent when the controller has written the data to the memory
+                        write_state_next = WRITE_STATE_RESP;
                     end
                 end else begin
                     write_state_next = WRITE_STATE_BURST;
                 end
             end
             WRITE_STATE_RESP: begin
-                if (s_axi_bready || !s_axi_bvalid) begin
+                if (~i_busy && (s_axi_bready || !s_axi_bvalid)) begin
                     s_axi_bid_next = write_id_reg;
                     s_axi_bvalid_next = 1'b1;
-                    s_axi_awready_next = 1'b1;
+                    s_axi_awready_next = 1'b0;
                     write_state_next = WRITE_STATE_IDLE;
                 end else begin
                     write_state_next = WRITE_STATE_RESP;
@@ -295,12 +317,13 @@ module AXIInterface #(
         read_count_next = read_count_reg;
         read_size_next = read_size_reg;
         read_burst_next = read_burst_reg;
+        read_drop_next = read_drop_reg & ~restart_read;
 
         s_axi_arready_next = 1'b0;
 
         case (read_state_reg)
             READ_STATE_IDLE: begin
-                s_axi_arready_next = ~i_busy;
+                s_axi_arready_next = accept_read;
 
                 if (s_axi_arready && s_axi_arvalid) begin
                     read_id_next = s_axi_arid;
@@ -309,6 +332,7 @@ module AXIInterface #(
                     read_size_next = s_axi_arsize < 3'($clog2(STRB_WIDTH)) ? s_axi_arsize :
                         3'($clog2(STRB_WIDTH));
                     read_burst_next = s_axi_arburst;
+                    s_axi_rlast_next = 1'b0;
 
                     s_axi_arready_next = 1'b0;
                     read_state_next = READ_STATE_BURST;
@@ -317,10 +341,14 @@ module AXIInterface #(
                 end
             end
             READ_STATE_BURST: begin
-                s_axi_rlast_next = (read_count_reg == 0);
-                if (s_axi_rready & i_read_word_ready) begin
+                if (i_read_word_ready & ~read_drop_reg & ~read_can_load) begin
+                    // master stalls: drop this word and the rest of the memory transaction, read again after a restart
+                    read_drop_next = 1'b1;
+                    read_state_next = READ_STATE_BURST;
+                end else if (i_read_word_ready & ~read_drop_reg) begin
                     mem_rd_en = 1'b1;
-                    s_axi_rvalid_next = i_read_word_ready;
+                    s_axi_rvalid_next = 1'b1;
+                    s_axi_rlast_next = (read_count_reg == 0);
                     s_axi_rid_next = read_id_reg;
                     if (read_burst_reg != 2'b00) begin
                         read_addr_next = read_addr_reg + (1 << read_size_reg);
@@ -329,7 +357,7 @@ module AXIInterface #(
                     if (read_count_reg > 0) begin
                         read_state_next = READ_STATE_BURST;
                     end else begin
-                        s_axi_arready_next = 1'b1;
+                        s_axi_arready_next = 1'b0;  // the SPI is still busy, accept in IDLE
                         read_state_next = READ_STATE_IDLE;
                     end
                 end else begin
@@ -347,6 +375,7 @@ module AXIInterface #(
         read_count_reg <= read_count_next;
         read_size_reg <= read_size_next;
         read_burst_reg <= read_burst_next;
+        read_drop_reg <= read_drop_next;
 
         s_axi_arready_reg <= s_axi_arready_next;
         s_axi_rid_reg <= s_axi_rid_next;
@@ -370,6 +399,7 @@ module AXIInterface #(
             read_count_reg        <= 8'd0;
             read_size_reg         <= 3'd0;
             read_burst_reg        <= 2'd0;
+            read_drop_reg         <= 1'b0;
 
             s_axi_arready_reg     <= 1'b0;
             s_axi_rvalid_reg      <= 1'b0;
