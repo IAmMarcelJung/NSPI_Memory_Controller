@@ -3,7 +3,8 @@ module top_quad #(
     parameter DATA_WIDTH = 32,
     parameter ID_WIDTH = 1,
     parameter MAX_NUM_BYTES = $clog2(1024),
-    parameter INTERFACE_TYPE = "OSPI"
+    parameter INTERFACE_TYPE = "OSPI",
+    parameter BUS_CLOCK_NEGEDGE = 0
 ) (
     input clk,
     input reset,
@@ -109,11 +110,23 @@ module top_quad #(
     assign control_i_data_strobe[3] = io_spi_d_datastrobe;
 
 
+    wire mmcm_locked;
+    wire sys_reset;
+
+    // the MMCM must not be reset by the user reset, otherwise sys_clk stops and the synchronous resets are never seen
     clk_wiz_0 mmcm (
-        .clk_out1(sys_clk),          
-        .reset(reset),
+        .clk_out1(sys_clk),
+        .locked(mmcm_locked),
+        .reset(1'b0),
         .clk_in1(clk)
     );
+
+    reg [1:0] reset_sync;
+    always @(posedge sys_clk or negedge mmcm_locked) begin
+        if (!mmcm_locked) reset_sync <= 2'b11;
+        else reset_sync <= {reset_sync[0], reset};
+    end
+    assign sys_reset = reset_sync[1];
 
 
     localparam INFINEON_CHIP = 1;
@@ -122,10 +135,11 @@ module top_quad #(
     OctalMemoryController_quad #(
         .ADDR_WIDTH(ADDR_WIDTH),
         .DATA_WIDTH(DATA_WIDTH),
-        .CHIP_TYPE(APMEMORY_CHIP)
+        .CHIP_TYPE(APMEMORY_CHIP),
+        .BUS_CLOCK_NEGEDGE(BUS_CLOCK_NEGEDGE)
     ) Controller (
         .clk  (sys_clk),
-        .reset(reset),
+        .reset(sys_reset),
 
         // SPI Pins
         .o_spi_bus_clock(o_spi_bus_clock),
@@ -186,7 +200,7 @@ module top_quad #(
 
     jtag_axi_0 JTAG_AXI_Module (
         .aclk(sys_clk),
-        .aresetn(~reset),
+        .aresetn(~sys_reset),
 
         .m_axi_awid(axi_awid),
         .m_axi_awaddr(axi_awaddr),
@@ -221,7 +235,7 @@ module top_quad #(
         .m_axi_arprot(axi_arprot),
         .m_axi_arqos(axi_arqos),
         .m_axi_arvalid(axi_arvalid),
-        .m_axi_arready(axi_arvalid),
+        .m_axi_arready(axi_arready),
 
         .m_axi_rid(axi_rid),
         .m_axi_rdata(axi_rdata),
