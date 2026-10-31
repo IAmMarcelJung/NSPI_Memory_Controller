@@ -191,12 +191,14 @@ module AXIInterface #(
     assign o_write_data_valid = s_axi_wvalid;
 
     // Only one transaction at a time: accept a new address only when both FSMs are idle, the SPI is not busy and
-    // no transaction starts in this cycle. Writes win if both are valid. The ready is registered, so it is only
-    // raised while the master shows a valid address.
+    // no transaction starts in this cycle. A write wins if it has its first data beat, otherwise the read goes
+    // first: a master may hold the write data until a read returns (DMA copy), so a pending AW alone must not block
+    // reads. The ready is registered, so it is only raised while the master shows a valid address.
     wire accept_any = ~i_busy & ~o_start_transaction & (write_state_reg == WRITE_STATE_IDLE) &
                       (read_state_reg == READ_STATE_IDLE);
-    wire accept_write = accept_any & s_axi_awvalid & s_axi_wvalid;  // the controller takes the first beat with the address
-    wire accept_read = accept_any & s_axi_arvalid & ~s_axi_awvalid;
+    wire write_ready_to_start = s_axi_awvalid & s_axi_wvalid;  // the controller takes the first beat with the address
+    wire accept_write = accept_any & write_ready_to_start;
+    wire accept_read = accept_any & s_axi_arvalid & ~write_ready_to_start;
 
     wire read_last_word;
     // on the address handshake rlast still belongs to the previous burst, so use arlen there

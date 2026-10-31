@@ -365,6 +365,151 @@ async def write_backpressure_test(dut):
     assert result.data == data
 
 
+# --------------------------------------------------------------------------------------------------------------
+# Traffic of the SoC masters (chip-di-owas): all go through a verilog-axi crossbar, which sets the ID to
+# master ID | port << 4 and routes B / R back by ID. The crypto core uses verilog-axi axi_dma (read -> AES ->
+# write, bursts of up to 16 beats), and axi_dma_wr raises AWVALID of later bursts before it has the write data.
+
+
+@cocotb.test()
+async def read_while_write_waits_for_data_test(dut):
+    """
+    AW is pending without write data, and the write data depends on a read issued afterwards (DMA copy).
+    The read must not wait for the write, otherwise the system deadlocks.
+    """
+    axi = await setup(dut)
+    before = model_errors(dut)
+    src = pattern(64, 21)
+    await with_timeout(axi.write(0x0800, src))
+    await wait_idle(dut)
+
+    axi.write_if.w_channel.pause = True
+    write = cocotb.start_soon(axi.write(0x0900, bytes(b ^ 0x5A for b in src)))
+    await ClockCycles(dut.clk, 10)
+    assert dut.s_axi_awvalid.value == 1 and dut.s_axi_wvalid.value == 0
+    try:
+        result = await with_timeout(axi.read(0x0800, 64), timeout_us=100)
+    finally:
+        axi.write_if.w_channel.pause = False
+    assert result.data == src
+    await with_timeout(write)
+    await wait_idle(dut)
+
+    result = await with_timeout(axi.read(0x0900, 64))
+    await wait_idle(dut)
+    assert result.data == bytes(b ^ 0x5A for b in src)
+    check_no_model_errors(dut, before)
+
+
+@cocotb.test()
+@cocotb.parametrize(seed=[1, 2])
+async def dma_copy_test(dut, seed):
+    """
+    Copy like the crypto core's axi_dma: 16 beat bursts, AW of each write burst is sent before the read burst
+    it depends on, W only after that read data arrived. Random RREADY / WVALID stalls, crossbar style IDs.
+    """
+    axi = await setup(dut)
+    before = model_errors(dut)
+    rnd = random.Random(seed)
+    src_addr, dst_addr, bursts = 0x2000, 0x3000, 8
+    src = pattern(64 * bursts, 30 + seed)
+    await with_timeout(axi.write(src_addr, src))
+    await wait_idle(dut)
+
+    def pauses():
+        while True:
+            yield rnd.random() < 0.3
+
+    for k in range(bursts):
+        chunk = src[64 * k : 64 * (k + 1)]
+        axi.write_if.w_channel.pause = True
+        write = cocotb.start_soon(axi.write(dst_addr + 64 * k, bytes(b ^ 0xA5 for b in chunk), awid=0x40))
+        await ClockCycles(dut.clk, rnd.randrange(1, 8))
+        axi.read_if.r_channel.set_pause_generator(pauses())
+        try:
+            result = await with_timeout(axi.read(src_addr + 64 * k, 64, arid=0x40), timeout_us=100)
+        finally:
+            axi.read_if.r_channel.clear_pause_generator()
+            axi.read_if.r_channel.pause = False  # clear keeps the last pause state
+            axi.write_if.w_channel.set_pause_generator(pauses())
+        assert result.data == chunk, f"read burst {k}"
+        await with_timeout(write)
+        axi.write_if.w_channel.clear_pause_generator()
+        axi.write_if.w_channel.pause = False
+    await wait_idle(dut)
+
+    result = await with_timeout(axi.read(dst_addr, 64 * bursts))
+    await wait_idle(dut)
+    assert result.data == bytes(b ^ 0xA5 for b in src)
+    check_no_model_errors(dut, before)
+
+
+@cocotb.test()
+async def axi_id_test(dut):
+    """BID / RID must return the ID of the request (cocotbext-axi asserts on an unexpected ID)."""
+    axi = await setup(dut)
+    before = model_errors(dut)
+    for n, axi_id in enumerate([0x00, 0x43, 0x30, 0x11, 0x20, 0xFF, 0x80]):
+        addr = 0x5000 + 0x40 * n
+        data = pattern(32, 40 + n)
+        await with_timeout(axi.write(addr, data, awid=axi_id))
+        result = await with_timeout(axi.read(addr, 32, arid=axi_id))
+        assert result.data == data, f"ID {axi_id:#x}"
+    await wait_idle(dut)
+    check_no_model_errors(dut, before)
+
+
+@cocotb.test()
+async def mixed_masters_test(dut):
+    """
+    CPU style single beat accesses (with byte strobes) running concurrently with DMA style bursts, each with its
+    own crossbar ID. The controller serializes them; every transaction must complete with its own data.
+    """
+    axi = await setup(dut)
+    before = model_errors(dut)
+    rnd = random.Random(5)
+    await with_timeout(axi.write(0x6000, bytes(256)))  # the model memory starts as X
+    await wait_idle(dut)
+
+    async def cpu():
+        ref = {a: 0 for a in range(0x6000, 0x6100)}
+        for i in range(40):
+            addr = 0x6000 + 4 * rnd.randrange(64)
+            if rnd.random() < 0.5:
+                offset, size = rnd.choice([(0, 4), (0, 1), (3, 1), (2, 2)])
+                data = bytes(rnd.randrange(256) for _ in range(size))
+                await axi.write(addr + offset, data, awid=0x43)
+                for j, b in enumerate(data):
+                    ref[addr + offset + j] = b
+            else:
+                result = await axi.read(addr, 4, arid=0x43)
+                for j in range(4):
+                    if addr + j in ref:
+                        assert result.data[j] == ref[addr + j], f"CPU read {addr + j:#x}"
+        return ref
+
+    async def dma(axi_id, base):
+        for i in range(6):
+            data = pattern(64, axi_id * 16 + i)
+            await axi.write(base + 64 * i, data, awid=axi_id)
+            result = await axi.read(base + 64 * i, 64, arid=axi_id)
+            assert result.data == data, f"DMA {axi_id:#x} burst {i}"
+
+    tasks = [cocotb.start_soon(dma(0x20, 0x7000)), cocotb.start_soon(dma(0x00, 0x7800))]
+    ref = await with_timeout(cpu(), timeout_us=2000)
+    for t in tasks:
+        if not t.done():
+            await with_timeout(t, timeout_us=2000)
+        t.result()  # raises the DMA task's assertion, if any
+    await wait_idle(dut)
+
+    result = await with_timeout(axi.read(0x6000, 256))
+    for a, b in ref.items():
+        assert result.data[a - 0x6000] == b, f"byte {a:#x}"
+    await wait_idle(dut)
+    check_no_model_errors(dut, before)
+
+
 async def max_ce_low_time(dut, coro, timeout_us=TIMEOUT_US):
     """Run an AXI transaction and return the longest CE# low time (ns) of chip 0 during it."""
     longest = 0
@@ -557,7 +702,7 @@ def test_quad_octal_apmemory_model_short_cem():
     """Data tests with a very short CE# limit (60 cycles), so nearly every burst is split by the tCEM counter."""
     run(
         test_filter="write_read_roundtrip_test|unaligned_word_test|single_word_consistency_test|byte_strobe_test"
-        "|random_stall_test|read_backpressure_test|write_backpressure_test",
+        "|random_stall_test|read_backpressure_test|write_backpressure_test|dma_copy_test|mixed_masters_test",
         cem_max_cycles=60,
     )
 
