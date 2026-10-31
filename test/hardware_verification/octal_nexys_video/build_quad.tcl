@@ -85,7 +85,10 @@ if {[lindex $argv 0] eq "program"} {
 proc open_fpga_target {} {
     upvar device device
     foreach target [get_hw_targets] {
-        if {[catch {open_hw_target $target}]} continue
+        if {[catch {open_hw_target $target}]} {
+            catch {close_hw_target $target}  ;# a failed open leaves the target open
+            continue
+        }
         set device [lindex [get_hw_devices -quiet xc7a200t*] 0]
         if {$device ne ""} return
         close_hw_target $target
