@@ -1,6 +1,7 @@
 .venv/
 __pycache__/
 sim_build/
+sim_build_*/
 .pytest_cache/
 .vscode/
 test/memory_models/*
