@@ -74,6 +74,10 @@ run_hw_axi [get_hw_axi_txns r]; get_property DATA [get_hw_axi_txns r]   ;# first
 Notes:
 - AXI stalls (WVALID low, RREADY low) and bursts longer than `CEM_MAX_CYCLES` end the memory transaction (CE# high)
   and restart it at the next beat. Very sparse RREADY (e.g. 8 of 200 cycles) gives about one word per restart.
+- Supported AXI bursts: INCR with full width beats (AxSIZE = 2), and single beats of any burst type and size (byte
+  lanes via WSTRB). FIXED / WRAP bursts and narrow bursts with more than one beat, and beats wider than the bus, are
+  not executed: the memory is not accessed, the write gets BRESP = SLVERR, the read returns all beats with zero data
+  and RRESP = SLVERR.
 - The controller holds RESET# of the memories low for 20 ms after reset, then writes MR0 (fixed latency). AXI accesses are held off (busy) until then.
 - The Digilent adapter can show up as two JTAG targets, the scripts pick the one with the FPGA.
 - `axi_verification_test.tcl` (older) still has expectations from the old address mapping.

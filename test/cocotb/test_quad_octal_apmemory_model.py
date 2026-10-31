@@ -18,7 +18,7 @@ from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, FallingEdge, First, RisingEdge, Timer
 from cocotb.utils import get_sim_time
 from cocotb_tools.runner import get_runner
-from cocotbext.axi import AxiBus, AxiMaster
+from cocotbext.axi import AxiBurstType, AxiBus, AxiMaster, AxiResp
 
 CLK_PERIOD_NS = 20  # 50 MHz system clock, 25 MHz bus clock
 NUM_CHIPS = 4
@@ -456,6 +456,71 @@ async def axi_id_test(dut):
         result = await with_timeout(axi.read(addr, 32, arid=axi_id))
         assert result.data == data, f"ID {axi_id:#x}"
     await wait_idle(dut)
+    check_no_model_errors(dut, before)
+
+
+@cocotb.test()
+async def unsupported_burst_test(dut):
+    """
+    FIXED / WRAP bursts with more than one beat and narrow bursts with more than one beat are not executed: SLVERR,
+    the memory is not accessed (no CE# low), read data is zero. Single beats of any type and size still work, and
+    a normal burst running concurrently is not disturbed.
+    """
+    axi = await setup(dut)
+    before = model_errors(dut)
+    base = 0x8000
+    old = pattern(64, 60)
+    await with_timeout(axi.write(base, old))
+    await wait_idle(dut)
+
+    ce_falls = 0
+
+    async def count_ce():
+        nonlocal ce_falls
+        while True:
+            await FallingEdge(dut.gen_memory[0].Memory.CE_n)
+            ce_falls += 1
+
+    mon = cocotb.start_soon(count_ce())
+    cases = [
+        ("FIXED", AxiBurstType.FIXED, 2, 16),
+        ("WRAP", AxiBurstType.WRAP, 2, 16),
+        ("narrow byte", AxiBurstType.INCR, 0, 8),
+        ("narrow half word", AxiBurstType.INCR, 1, 8),
+        ("narrow FIXED", AxiBurstType.FIXED, 0, 4),
+    ]
+    for name, burst, size, length in cases:
+        result = await with_timeout(axi.write(base, bytes([0xEE] * length), burst=burst, size=size, awid=0x21))
+        assert result.resp == AxiResp.SLVERR, f"{name} write: {result.resp}"
+        result = await with_timeout(axi.read(base, length, burst=burst, size=size, arid=0x22))
+        assert result.resp == AxiResp.SLVERR, f"{name} read: {result.resp}"
+        assert result.data == bytes(length), f"{name} read data"
+    mon.cancel()
+    assert ce_falls == 0, f"unsupported bursts accessed the memory ({ce_falls} CE# low phases)"
+    assert bytes(mem_get(dut, base, 64)) == old, "unsupported write changed the memory"
+
+    # single beats are supported with any burst type and size
+    result = await with_timeout(axi.write(base + 1, b"\x5a", size=0))
+    assert result.resp == AxiResp.OKAY
+    result = await with_timeout(axi.write(base + 6, b"\x12\x34", size=1, burst=AxiBurstType.FIXED))
+    assert result.resp == AxiResp.OKAY
+    result = await with_timeout(axi.read(base + 4, 4, burst=AxiBurstType.FIXED))
+    assert result.resp == AxiResp.OKAY
+    expected = bytearray(old)
+    expected[1] = 0x5A
+    expected[6:8] = b"\x12\x34"
+    assert result.data == bytes(expected[4:8])
+
+    # an unsupported write running concurrently with normal traffic
+    data = pattern(64, 61)
+    bad = cocotb.start_soon(axi.write(base, bytes(16), burst=AxiBurstType.WRAP, awid=0x21))
+    await with_timeout(axi.write(base + 0x40, data, awid=0x20))
+    result = await with_timeout(axi.read(base + 0x40, 64, arid=0x20))
+    assert result.resp == AxiResp.OKAY and result.data == data
+    bad_result = bad.result() if bad.done() else await with_timeout(bad)
+    assert bad_result.resp == AxiResp.SLVERR
+    await wait_idle(dut)
+    assert bytes(mem_get(dut, base, 64)) == bytes(expected), "concurrent unsupported write changed the memory"
     check_no_model_errors(dut, before)
 
 

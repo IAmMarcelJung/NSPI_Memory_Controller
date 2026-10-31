@@ -119,23 +119,42 @@ module AXIInterface #(
         end
     end
 
-    // Read FSM
-    localparam [0:0] READ_STATE_IDLE = 1'd0;
-    localparam [0:0] READ_STATE_BURST = 1'd1;
+    localparam [1:0] RESP_OKAY = 2'b00;
+    localparam [1:0] RESP_SLVERR = 2'b10;
+    localparam [2:0] SIZE_FULL = 3'($clog2(STRB_WIDTH));  // AxSIZE of a full width beat
 
-    reg [0:0] read_state_reg;
-    reg [0:0] read_state_next;
+    // The memory is accessed as one linear word stream from the start address. Bursts that need anything else
+    // (FIXED or WRAP with more than one beat, narrow beats in a burst, beats wider than the bus) are not executed:
+    // the memory is not touched and the burst gets SLVERR.
+    function automatic burst_unsupported(input [7:0] len, input [2:0] size, input [1:0] burst);
+        burst_unsupported = (size > SIZE_FULL) | ((len != 8'd0) & ((burst != 2'b01) | (size != SIZE_FULL)));
+    endfunction
+
+    wire aw_unsupported = burst_unsupported(s_axi_awlen, s_axi_awsize, s_axi_awburst);
+    wire ar_unsupported = burst_unsupported(s_axi_arlen, s_axi_arsize, s_axi_arburst);
+
+    // Read FSM
+    localparam [1:0] READ_STATE_IDLE = 2'd0;
+    localparam [1:0] READ_STATE_BURST = 2'd1;
+    localparam [1:0] READ_STATE_ERROR = 2'd2;  // unsupported burst: return all beats with SLVERR
+
+    reg [1:0] read_state_reg;
+    reg [1:0] read_state_next;
     reg read_drop_reg, read_drop_next;  // a word could not be taken, ignore the rest until the restart
 
     // Write FSM
     localparam [1:0] WRITE_STATE_IDLE = 2'd0;
     localparam [1:0] WRITE_STATE_BURST = 2'd1;
     localparam [1:0] WRITE_STATE_RESP = 2'd2;
+    localparam [1:0] WRITE_STATE_DISCARD = 2'd3;  // unsupported burst: take the beats without writing them
+
+    reg write_error_reg, write_error_next;  // the burst gets SLVERR
 
     reg [1:0] write_state_reg;
     reg [1:0] write_state_next;
 
     reg mem_rd_en;
+    reg error_rd_en;  // load an error beat (zero data) into the output register
 
     reg [ID_WIDTH-1:0] read_id_reg, read_id_next;
     reg [ADDR_WIDTH-1:0] read_addr_reg, read_addr_next;
@@ -150,27 +169,31 @@ module AXIInterface #(
 
     reg s_axi_awready_reg, s_axi_awready_next;
     reg [ID_WIDTH-1:0] s_axi_bid_reg, s_axi_bid_next;
+    reg [1:0] s_axi_bresp_reg, s_axi_bresp_next;
     reg s_axi_bvalid_reg, s_axi_bvalid_next;
     reg s_axi_arready_reg, s_axi_arready_next;
     reg [ID_WIDTH-1:0] s_axi_rid_reg, s_axi_rid_next;
     reg [DATA_WIDTH-1:0] s_axi_rdata_reg;
+    reg [1:0] s_axi_rresp_reg, s_axi_rresp_next;
     reg s_axi_rlast_reg, s_axi_rlast_next;
     reg s_axi_rvalid_reg, s_axi_rvalid_next;
     reg [ID_WIDTH-1:0] s_axi_rid_pipe_reg;
     reg [DATA_WIDTH-1:0] s_axi_rdata_pipe_reg;
+    reg [1:0] s_axi_rresp_pipe_reg;
     reg s_axi_rvalid_pipe_reg;
 
     assign s_axi_awready = s_axi_awready_reg;
     // the signal has to be passed through immediately from the controller to the axi interface - otherwise we have a clock cycle delay
     // only during the burst: the controller also requests words after the last beat, these must not take the beats of the next burst
-    assign s_axi_wready = i_write_word_ready & (write_state_reg == WRITE_STATE_BURST);
+    assign s_axi_wready = (i_write_word_ready & (write_state_reg == WRITE_STATE_BURST)) |
+                          (write_state_reg == WRITE_STATE_DISCARD);
     assign s_axi_bid = s_axi_bid_reg;
-    assign s_axi_bresp = 2'b00;
+    assign s_axi_bresp = s_axi_bresp_reg;
     assign s_axi_bvalid = s_axi_bvalid_reg;
     assign s_axi_arready = s_axi_arready_reg;
     assign s_axi_rid = PIPELINE_OUTPUT ? s_axi_rid_pipe_reg : s_axi_rid_reg;
     assign s_axi_rdata = PIPELINE_OUTPUT ? s_axi_rdata_pipe_reg : s_axi_rdata_reg;
-    assign s_axi_rresp = 2'b00;
+    assign s_axi_rresp = PIPELINE_OUTPUT ? s_axi_rresp_pipe_reg : s_axi_rresp_reg;
     assign s_axi_rlast = s_axi_rlast_reg;//PIPELINE_OUTPUT ? s_axi_rlast_pipe_reg : s_axi_rlast_reg;
     assign s_axi_rvalid = PIPELINE_OUTPUT ? s_axi_rvalid_pipe_reg : s_axi_rvalid_reg;
 
@@ -186,15 +209,18 @@ module AXIInterface #(
     wire read_can_load = ~s_axi_rvalid_reg | s_axi_rready;  // output register free in this cycle
     wire restart_write = (write_state_reg == WRITE_STATE_BURST) & ~i_busy & s_axi_wvalid;
     wire restart_read = (read_state_reg == READ_STATE_BURST) & ~i_busy & read_can_load;
-    assign o_start_transaction = (s_axi_awready && s_axi_awvalid) | (s_axi_arready && s_axi_arvalid) |
+    wire aw_handshake = s_axi_awready & s_axi_awvalid;
+    wire ar_handshake = s_axi_arready & s_axi_arvalid;
+    assign o_start_transaction = (aw_handshake & ~aw_unsupported) | (ar_handshake & ~ar_unsupported) |
                                  restart_write | restart_read;
     assign o_write_data_valid = s_axi_wvalid;
 
     // Only one transaction at a time: accept a new address only when both FSMs are idle, the SPI is not busy and
-    // no transaction starts in this cycle. A write wins if it has its first data beat, otherwise the read goes
+    // no address is taken in this cycle. A write wins if it has its first data beat, otherwise the read goes
     // first: a master may hold the write data until a read returns (DMA copy), so a pending AW alone must not block
     // reads. The ready is registered, so it is only raised while the master shows a valid address.
-    wire accept_any = ~i_busy & ~o_start_transaction & (write_state_reg == WRITE_STATE_IDLE) &
+    wire accept_any = ~i_busy & ~o_start_transaction & ~aw_handshake & ~ar_handshake &
+                      (write_state_reg == WRITE_STATE_IDLE) &
                       (read_state_reg == READ_STATE_IDLE);
     wire write_ready_to_start = s_axi_awvalid & s_axi_wvalid;  // the controller takes the first beat with the address
     wire accept_write = accept_any & write_ready_to_start;
@@ -222,9 +248,11 @@ module AXIInterface #(
         write_count_next = write_count_reg;
         write_size_next = write_size_reg;
         write_burst_next = write_burst_reg;
+        write_error_next = write_error_reg;
 
         s_axi_awready_next = 1'b0;
         s_axi_bid_next = s_axi_bid_reg;
+        s_axi_bresp_next = s_axi_bresp_reg;
         s_axi_bvalid_next = s_axi_bvalid_reg && !s_axi_bready;
 
         case (write_state_reg)
@@ -239,9 +267,10 @@ module AXIInterface #(
                     write_size_next = s_axi_awsize < 3'($clog2(STRB_WIDTH)) ? s_axi_awsize :
                         3'($clog2(STRB_WIDTH));
                     write_burst_next = s_axi_awburst;
+                    write_error_next = aw_unsupported;
 
                     s_axi_awready_next = 1'b0;
-                    write_state_next = WRITE_STATE_BURST;
+                    write_state_next = aw_unsupported ? WRITE_STATE_DISCARD : WRITE_STATE_BURST;
                 end else begin
                     write_state_next = WRITE_STATE_IDLE;
                 end
@@ -262,18 +291,24 @@ module AXIInterface #(
                     write_state_next = WRITE_STATE_BURST;
                 end
             end
+            WRITE_STATE_DISCARD: begin
+                if (s_axi_wvalid) begin
+                    write_count_next = write_count_reg - 1;
+                    write_state_next = (write_count_reg > 0) ? WRITE_STATE_DISCARD : WRITE_STATE_RESP;
+                end else begin
+                    write_state_next = WRITE_STATE_DISCARD;
+                end
+            end
             WRITE_STATE_RESP: begin
                 if (~i_busy && (s_axi_bready || !s_axi_bvalid)) begin
                     s_axi_bid_next = write_id_reg;
+                    s_axi_bresp_next = write_error_reg ? RESP_SLVERR : RESP_OKAY;
                     s_axi_bvalid_next = 1'b1;
                     s_axi_awready_next = 1'b0;
                     write_state_next = WRITE_STATE_IDLE;
                 end else begin
                     write_state_next = WRITE_STATE_RESP;
                 end
-            end
-            default: begin
-                write_state_next = WRITE_STATE_IDLE;
             end
         endcase
     end
@@ -286,9 +321,11 @@ module AXIInterface #(
         write_count_reg <= write_count_next;
         write_size_reg <= write_size_next;
         write_burst_reg <= write_burst_next;
+        write_error_reg <= write_error_next;
 
         s_axi_awready_reg <= s_axi_awready_next;
         s_axi_bid_reg <= s_axi_bid_next;
+        s_axi_bresp_reg <= s_axi_bresp_next;
         s_axi_bvalid_reg <= s_axi_bvalid_next;
 
         if (!rst_neg) begin
@@ -298,10 +335,12 @@ module AXIInterface #(
             write_count_reg   <= 8'd0;
             write_size_reg    <= 3'd0;
             write_burst_reg   <= 2'd0;
+            write_error_reg   <= 1'b0;
 
             s_axi_awready_reg <= 1'b0;
             s_axi_bvalid_reg  <= 1'b0;
             s_axi_bid_reg     <= {ID_WIDTH{1'b0}};
+            s_axi_bresp_reg   <= RESP_OKAY;
         end
     end
 
@@ -309,8 +348,10 @@ module AXIInterface #(
         read_state_next = READ_STATE_IDLE;
 
         mem_rd_en = 1'b0;
+        error_rd_en = 1'b0;
 
         s_axi_rid_next = s_axi_rid_reg;
+        s_axi_rresp_next = s_axi_rresp_reg;
         s_axi_rlast_next = s_axi_rlast_reg;
         s_axi_rvalid_next = s_axi_rvalid_reg && !(s_axi_rready || (PIPELINE_OUTPUT && !s_axi_rvalid_pipe_reg));
 
@@ -337,7 +378,7 @@ module AXIInterface #(
                     s_axi_rlast_next = 1'b0;
 
                     s_axi_arready_next = 1'b0;
-                    read_state_next = READ_STATE_BURST;
+                    read_state_next = ar_unsupported ? READ_STATE_ERROR : READ_STATE_BURST;
                 end else begin
                     read_state_next = READ_STATE_IDLE;
                 end
@@ -352,6 +393,7 @@ module AXIInterface #(
                     s_axi_rvalid_next = 1'b1;
                     s_axi_rlast_next = (read_count_reg == 0);
                     s_axi_rid_next = read_id_reg;
+                    s_axi_rresp_next = RESP_OKAY;
                     if (read_burst_reg != 2'b00) begin
                         read_addr_next = read_addr_reg + (1 << read_size_reg);
                     end
@@ -365,6 +407,22 @@ module AXIInterface #(
                 end else begin
                     read_state_next = READ_STATE_BURST;
                 end
+            end
+            READ_STATE_ERROR: begin
+                if (read_can_load) begin
+                    error_rd_en = 1'b1;
+                    s_axi_rvalid_next = 1'b1;
+                    s_axi_rlast_next = (read_count_reg == 0);
+                    s_axi_rid_next = read_id_reg;
+                    s_axi_rresp_next = RESP_SLVERR;
+                    read_count_next = read_count_reg - 1;
+                    read_state_next = (read_count_reg > 0) ? READ_STATE_ERROR : READ_STATE_IDLE;
+                end else begin
+                    read_state_next = READ_STATE_ERROR;
+                end
+            end
+            default: begin
+                read_state_next = READ_STATE_IDLE;
             end
         endcase
     end
@@ -381,16 +439,20 @@ module AXIInterface #(
 
         s_axi_arready_reg <= s_axi_arready_next;
         s_axi_rid_reg <= s_axi_rid_next;
+        s_axi_rresp_reg <= s_axi_rresp_next;
         s_axi_rlast_reg <= s_axi_rlast_next;
         s_axi_rvalid_reg <= s_axi_rvalid_next;
 
         if (mem_rd_en) begin
             s_axi_rdata_reg <= i_read_data;
+        end else if (error_rd_en) begin
+            s_axi_rdata_reg <= {DATA_WIDTH{1'b0}};
         end
 
         if (!s_axi_rvalid_pipe_reg || s_axi_rready) begin
             s_axi_rid_pipe_reg <= s_axi_rid_reg;
             s_axi_rdata_pipe_reg <= s_axi_rdata_reg;
+            s_axi_rresp_pipe_reg <= s_axi_rresp_reg;
             s_axi_rvalid_pipe_reg <= s_axi_rvalid_reg;
         end
 
@@ -408,6 +470,8 @@ module AXIInterface #(
             s_axi_rvalid_pipe_reg <= 1'b0;
             s_axi_rlast_reg       <= 1'b0;
             s_axi_rid_reg         <= {ID_WIDTH{1'b0}};
+            s_axi_rresp_reg       <= RESP_OKAY;
+            s_axi_rresp_pipe_reg  <= RESP_OKAY;
             s_axi_rid_pipe_reg    <= {ID_WIDTH{1'b0}};
             s_axi_rdata_reg       <= {DATA_WIDTH{1'b0}};
             s_axi_rdata_pipe_reg  <= {DATA_WIDTH{1'b0}};

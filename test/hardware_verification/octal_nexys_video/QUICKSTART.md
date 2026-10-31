@@ -37,7 +37,7 @@ The FPGA sits on JTAG target `...BDB` (FTDI channel B); the scripts try every ta
 
 | File | Change |
 |---|---|
-| `src/AXIInterface.v` | one transaction at a time, rlast fix, wready only in the burst, restarts, read drop, BRESP after write, a waiting AW without W no longer blocks reads (DMA copy deadlock) |
+| `src/AXIInterface.v` | one transaction at a time, rlast fix, wready only in the burst, restarts, read drop, BRESP after write, a waiting AW without W no longer blocks reads (DMA copy deadlock), SLVERR for unsupported bursts (FIXED/WRAP/narrow with more than one beat) |
 | `src/OSPIController_quad.v` | RESET#/tRST + MR0 init, no write enable for APMemory, tCEM counter, write cut on stall |
 | `src/OctalSPI_quad.v` | chip address = AXI/4, read pad drop, fixed read latency, MR write latency 1, test parameter `BUS_CLOCK_NEGEDGE` |
 | `src/OctalMemoryController_quad.v` | parameters `MEMORY_RESET_CYCLES`, `CEM_MAX_CYCLES`, `BUS_CLOCK_NEGEDGE`, wiring |
