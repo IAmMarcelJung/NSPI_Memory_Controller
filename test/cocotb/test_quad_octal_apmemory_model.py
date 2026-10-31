@@ -460,6 +460,49 @@ async def axi_id_test(dut):
 
 
 @cocotb.test()
+async def queued_bursts_with_stall_test(dut):
+    """
+    Several bursts queued back to back while the master stalls RREADY / WVALID. The next address is accepted while
+    the last beat of the previous burst still waits in the output register, that beat must keep its rlast
+    (cocotbext-axi asserts on a missing rlast) and every burst its own data.
+    """
+    axi = await setup(dut)
+    before = model_errors(dut)
+    rnd = random.Random(7)
+
+    def pauses():
+        # long stalls too: the bug window is RREADY still low after the memory transaction has ended
+        while True:
+            for _ in range(rnd.randrange(1, 20)):
+                yield False
+            for _ in range(rnd.choice([0, 1, 3, 10, 30, 50])):
+                yield True
+
+    for beats in [1, 4, 16, 64]:
+        base = 0x9000
+        chunks = [pattern(4 * beats, 70 + beats + i) for i in range(6)]
+        axi.write_if.w_channel.set_pause_generator(pauses())
+        writes = [cocotb.start_soon(axi.write(base + 4 * beats * i, c)) for i, c in enumerate(chunks)]
+        for t in writes:
+            if not t.done():
+                await with_timeout(t, timeout_us=2000)
+        axi.write_if.w_channel.clear_pause_generator()
+        axi.write_if.w_channel.pause = False
+        await wait_idle(dut)
+        assert bytes(mem_get(dut, base, 4 * beats * len(chunks))) == b"".join(chunks), f"{beats} beats: write"
+
+        axi.read_if.r_channel.set_pause_generator(pauses())
+        reads = [cocotb.start_soon(axi.read(base + 4 * beats * i, 4 * beats)) for i in range(len(chunks))]
+        for i, t in enumerate(reads):
+            result = t.result() if t.done() else await with_timeout(t, timeout_us=2000)
+            assert result.data == chunks[i], f"{beats} beats: read burst {i}"
+        axi.read_if.r_channel.clear_pause_generator()
+        axi.read_if.r_channel.pause = False
+        await wait_idle(dut)
+    check_no_model_errors(dut, before)
+
+
+@cocotb.test()
 async def unsupported_burst_test(dut):
     """
     FIXED / WRAP bursts with more than one beat and narrow bursts with more than one beat are not executed: SLVERR,
@@ -767,7 +810,8 @@ def test_quad_octal_apmemory_model_short_cem():
     """Data tests with a very short CE# limit (60 cycles), so nearly every burst is split by the tCEM counter."""
     run(
         test_filter="write_read_roundtrip_test|unaligned_word_test|single_word_consistency_test|byte_strobe_test"
-        "|random_stall_test|read_backpressure_test|write_backpressure_test|dma_copy_test|mixed_masters_test",
+        "|random_stall_test|read_backpressure_test|write_backpressure_test|dma_copy_test|mixed_masters_test"
+        "|queued_bursts_with_stall_test",
         cem_max_cycles=60,
     )
 
@@ -776,6 +820,12 @@ def test_quad_octal_apmemory_model_hw_scenario():
     """Run the board scenario, writes the reads to $HW_SCENARIO (skipped if not set)."""
     if os.getenv("HW_SCENARIO"):
         run(test_filter="hw_scenario_test", init_byte=0xEE)
+
+
+def test_quad_octal_apmemory_model_throughput():
+    """Measure cycles per burst, writes a table to $THROUGHPUT (skipped if not set)."""
+    if os.getenv("THROUGHPUT"):
+        run(test_filter="throughput_test")
 
 
 def test_quad_octal_apmemory_model_refresh_pushout():
@@ -819,3 +869,85 @@ async def hw_scenario_test(dut):
             words = [int.from_bytes(d[i : i + 4], "little") for i in range(0, len(d), 4)]
             out.write(f"R {addr:08x} " + " ".join(f"{w:08x}" for w in words) + "\n")
     out.close()
+
+
+# --------------------------------------------------------------------------------------------------------------
+# Throughput measurement (not a pass/fail test)
+
+
+@cocotb.test(skip=os.getenv("THROUGHPUT") is None)
+async def throughput_test(dut):
+    """
+    Cycles from the first address handshake to the last R beat / B response, measured on the AXI signals.
+    "single" = one burst (latency), "8x" = 8 bursts queued back to back (sustained), optionally with 30 %
+    random RREADY / WVALID stalls. Results go to the file named by $THROUGHPUT.
+    """
+    axi = await setup(dut)
+    before = model_errors(dut)
+    await with_timeout(axi.write(0, bytes(0x8000)))  # the model memory starts as X
+    await wait_idle(dut)
+
+    async def measure(op, beats, count, stall, seed):
+        rnd = random.Random(seed)
+        first = None
+        last = None
+        done = False
+
+        async def monitor():
+            nonlocal first, last
+            cycle = 0
+            while not done:
+                await RisingEdge(dut.clk)
+                cycle += 1
+                if first is None and (
+                    (dut.s_axi_awvalid.value == 1 and dut.s_axi_awready.value == 1)
+                    or (dut.s_axi_arvalid.value == 1 and dut.s_axi_arready.value == 1)
+                ):
+                    first = cycle
+                if (dut.s_axi_rvalid.value == 1 and dut.s_axi_rready.value == 1 and dut.s_axi_rlast.value == 1) or (
+                    dut.s_axi_bvalid.value == 1 and dut.s_axi_bready.value == 1
+                ):
+                    last = cycle
+
+        def pauses():
+            while True:
+                yield rnd.random() < 0.3
+
+        channel = axi.read_if.r_channel if op == "read" else axi.write_if.w_channel
+        if stall:
+            channel.set_pause_generator(pauses())
+        mon = cocotb.start_soon(monitor())
+        tasks = []
+        for i in range(count):
+            addr = 4 * beats * i
+            if op == "read":
+                tasks.append(cocotb.start_soon(axi.read(addr, 4 * beats)))
+            else:
+                tasks.append(cocotb.start_soon(axi.write(addr, pattern(4 * beats, i))))
+        for t in tasks:
+            if not t.done():
+                await with_timeout(t, timeout_us=5000)
+        done = True
+        await RisingEdge(dut.clk)
+        mon.cancel()
+        if stall:
+            channel.clear_pause_generator()
+            channel.pause = False
+        await wait_idle(dut)
+        return last - first + 1
+
+    lines = ["op     beats  bursts  stall  cycles  cycles/burst  words/cycle  MB/s@50MHz"]
+    for op in ["read", "write"]:
+        for beats in [1, 4, 16, 64, 256]:
+            for count, stall in [(1, False), (8, False), (8, True)]:
+                cycles = await measure(op, beats, count, stall, beats * 10 + count)
+                words = beats * count
+                mbs = 4 * words / (cycles * CLK_PERIOD_NS * 1e-9) / 1e6
+                lines.append(
+                    f"{op:<6} {beats:>5}  {count:>6}  {'30%' if stall else '-':>5}  {cycles:>6}  "
+                    f"{cycles / count:>12.1f}  {words / cycles:>11.3f}  {mbs:>10.1f}"
+                )
+                dut._log.info(lines[-1])
+    with open(os.environ["THROUGHPUT"], "w") as f:
+        f.write("\n".join(lines) + "\n")
+    check_no_model_errors(dut, before)

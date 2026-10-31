@@ -375,7 +375,8 @@ module AXIInterface #(
                     read_size_next = s_axi_arsize < 3'($clog2(STRB_WIDTH)) ? s_axi_arsize :
                         3'($clog2(STRB_WIDTH));
                     read_burst_next = s_axi_arburst;
-                    s_axi_rlast_next = 1'b0;
+                    // rlast is not cleared here: the last beat of the previous burst may still wait in the output
+                    // register (RREADY low), rlast is set with every beat that is loaded
 
                     s_axi_arready_next = 1'b0;
                     read_state_next = ar_unsupported ? READ_STATE_ERROR : READ_STATE_BURST;
