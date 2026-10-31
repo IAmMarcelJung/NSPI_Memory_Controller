@@ -59,7 +59,9 @@ R2. **Clock frequency assumptions** [user]: `CEM_MAX_CYCLES` (350 = 7 us), `MEMO
     tRST wait (200 cycles = 4 us) assume 50 MHz: derive them from a clock frequency parameter, or document it.
 R3. **Read throughput under stalls** [user]: restart on stall has no skid buffer, a very sparse RREADY
     (e.g. 8 of 200 cycles) gives about one word per restart. Add a small skid buffer if a real master behaves like
-    that (depends on the toplevel AXI master, see P5).
+    that (depends on the toplevel AXI master, see P5). Measured in sim ([THROUGHPUT.md](THROUGHPUT.md)): with 30 %
+    random stalls ~17 MB/s read / ~34 MB/s write instead of up to ~180 MB/s. Waiting for the real stall behaviour
+    of the SoC masters (chip-di-owas) before deciding.
 
 ### Tests and Nexys setup
 
