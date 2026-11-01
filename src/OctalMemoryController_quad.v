@@ -11,9 +11,11 @@ module OctalMemoryController_quad #(
     parameter STRB_WIDTH = (DATA_WIDTH / 8),
     parameter ID_WIDTH = 8,
     parameter CHIP_TYPE = -1,  // 1 for simulation with Infineon model, 2 for hardware with APMemory
-    parameter integer CLK_FREQ_HZ = 50_000_000,  // clk frequency, the time based limits below are derived from it
+    // clk frequency range: minimum times (reset) are derived from the highest, maximum times (tCEM) from the lowest
+    parameter integer CLK_FREQ_HZ = 50_000_000,  // highest clk frequency
+    parameter integer CLK_FREQ_MIN_HZ = 10_000_000,  // lowest clk frequency (slower clock for timing problems / tests)
     parameter integer MEMORY_RESET_CYCLES = (CLK_FREQ_HZ + 49) / 50,  // RESET# low time of the memories (20 ms)
-    parameter integer CEM_MAX_CYCLES = CLK_FREQ_HZ / 1000 * 7 / 1000,  // longest CE# low time (7 us, tCEM 8 us)
+    parameter integer CEM_MAX_CYCLES = CLK_FREQ_MIN_HZ / 1000 * 7 / 1000,  // longest CE# low time (7 us, tCEM 8 us)
     parameter BUS_CLOCK_NEGEDGE = 1  // 1: bus clock from a negedge register, centre aligned data; 0: edge aligned (see OctalSPI_quad)
 ) (
     input clk,
@@ -92,6 +94,7 @@ module OctalMemoryController_quad #(
         .DATA_WIDTH(DATA_WIDTH),
         .CHIP_TYPE(CHIP_TYPE),
         .CLK_FREQ_HZ(CLK_FREQ_HZ),
+        .CLK_FREQ_MIN_HZ(CLK_FREQ_MIN_HZ),
         .MEMORY_RESET_CYCLES(MEMORY_RESET_CYCLES),
         .CEM_MAX_CYCLES(CEM_MAX_CYCLES),
         .BUS_CLOCK_NEGEDGE(BUS_CLOCK_NEGEDGE)

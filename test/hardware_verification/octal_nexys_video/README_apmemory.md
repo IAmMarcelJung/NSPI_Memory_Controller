@@ -80,9 +80,14 @@ Notes:
   and RRESP = SLVERR.
 - Reset: `rstn` is active low with asynchronous assert and synchronous release (SoC: `resetn_async`), all flip-flops
   have an asynchronous reset.
-- `CLK_FREQ_HZ` (default 50 MHz) sets the time based limits: RESET# low 20 ms (`MEMORY_RESET_CYCLES`), tRST wait
-  4 us, longest CE# low time 7 us (`CEM_MAX_CYCLES`). Both cycle counts can still be overridden. Only 50 MHz is
-  verified; the fixed protocol settings (latency code 5, bus clock = clk / 2) are not derived.
+- Clock range `CLK_FREQ_MIN_HZ` .. `CLK_FREQ_HZ` (default 10 .. 50 MHz): the controller counts clk cycles, it has no
+  time reference. Minimum times come from the highest frequency: RESET# low 20 ms (`MEMORY_RESET_CYCLES`), tRST wait
+  4 us. The maximum time comes from the lowest frequency: CE# low at most 7 us (`CEM_MAX_CYCLES`, 70 cycles), tCEM is
+  8 us. Any clk in the range is safe, a slower clk only makes the reset wait longer. Both cycle counts can still be
+  overridden. Cost of the 10 MHz floor at 50 MHz: bursts longer than about 40 beats are split into several memory
+  transactions (256 beats: read 113 instead of 176 MB/s, write 140 instead of 184 MB/s); 16-beat bursts and single
+  accesses are not affected. Verified in sim at 50 and 10 MHz; the fixed protocol settings (latency code 5, bus
+  clock = clk / 2) work at any clk in the range.
 - `BUS_CLOCK_NEGEDGE` (default 1): the bus clock comes from a negedge register, so write data and CE# are centre
   aligned to it (half a clk period setup and hold) and read data is captured on the negedge. 0 gives the old edge
   aligned bus clock, which has negative write hold in the ASIC STA. Nexys: `BUS_CLOCK_NEGEDGE=0` for build_quad.tcl

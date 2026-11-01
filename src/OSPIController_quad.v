@@ -16,15 +16,18 @@ module OSPIController_quad #(
     parameter DATA_WIDTH = 32,
     parameter STRB_WIDTH = DATA_WIDTH / 8,
     parameter CHIP_TYPE = -1,  // 1 is Infineon, 2 is APMemory
-    // clk frequency: the time based limits below are derived from it (verified at 50 MHz)
+    // clk frequency range: minimum times (RESET#, tRST) are derived from the highest frequency, the maximum time
+    // tCEM from the lowest one, so any clk between the two is safe (verified at 50 and 10 MHz)
     parameter integer CLK_FREQ_HZ = 50_000_000,
+    parameter integer CLK_FREQ_MIN_HZ = 10_000_000,
     // RESET# of the memories is held low this many clk cycles after reset (default 20 ms).
     // It must cover tRP (1 us) and tPU (150 us after the memory supply is stable) - on the Nexys Video the FMC
     // supply only ramps up after the FPGA configuration, 400 us were too short there.
     parameter integer MEMORY_RESET_CYCLES = (CLK_FREQ_HZ + 49) / 50,
     // Longest memory transaction in clk cycles. CE# must not stay low longer than tCEM (8 us, standard temperature),
-    // otherwise the memory cannot refresh. A longer AXI burst is split, the default is 7 us (rounded down).
-    parameter integer CEM_MAX_CYCLES = CLK_FREQ_HZ / 1000 * 7 / 1000,
+    // otherwise the memory cannot refresh. A longer AXI burst is split, the default is 7 us at the lowest clk
+    // frequency (rounded down).
+    parameter integer CEM_MAX_CYCLES = CLK_FREQ_MIN_HZ / 1000 * 7 / 1000,
     parameter BUS_CLOCK_NEGEDGE = 1  // see OctalSPI_quad
 ) (
     input clk,

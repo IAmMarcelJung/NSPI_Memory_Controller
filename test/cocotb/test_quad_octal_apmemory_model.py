@@ -20,7 +20,8 @@ from cocotb.utils import get_sim_time
 from cocotb_tools.runner import get_runner
 from cocotbext.axi import AxiBurstType, AxiBus, AxiMaster, AxiResp
 
-CLK_PERIOD_NS = 20  # 50 MHz system clock, 25 MHz bus clock
+# 50 MHz system clock, 25 MHz bus clock; run(clk_period_ns=...) sets a slower clock through the environment
+CLK_PERIOD_NS = int(os.getenv("CLK_PERIOD_NS", "20"))
 NUM_CHIPS = 4
 T_RST_NS = 2000  # reset to command valid
 TIMEOUT_US = 500
@@ -117,7 +118,8 @@ async def setup(dut, wait_for_memory=True):
 
 async def with_timeout(coro, timeout_us=TIMEOUT_US):
     task = cocotb.start_soon(coro)
-    timeout = Timer(timeout_us, unit="us")
+    # the timeouts are given for 50 MHz, a slower clock takes proportionally longer
+    timeout = Timer(timeout_us * CLK_PERIOD_NS / 20, unit="us")
     trigger = await First(task, timeout)
     assert trigger is not timeout, "AXI transaction timed out"
     return task.result()
@@ -867,7 +869,9 @@ async def latency_setup_test(dut):
 
 
 # --------------------------------------------------------------------------------------------------------------
-def run(test_filter=None, pushout=0, wave=False, init_byte=-1, cem_max_cycles=350, bus_clock_negedge=1, r_fifo_depth=0):
+def run(test_filter=None, pushout=0, wave=False, init_byte=-1, cem_max_cycles=None, bus_clock_negedge=1, r_fifo_depth=0, build_suffix="",
+        clk_period_ns=20):
+    """cem_max_cycles=None keeps the controller default (derived from CLK_FREQ_MIN_HZ)."""
     proj_path = Path(__file__).resolve().parent
     sources = [
         proj_path / "../../src/OSPIController_quad.v",
@@ -885,13 +889,16 @@ def run(test_filter=None, pushout=0, wave=False, init_byte=-1, cem_max_cycles=35
         # the controller holds RESET# low for 400 us, which covers tPU of the device
         "T_PU": 0,
         "INIT_BYTE": init_byte,
-        "CEM_MAX_CYCLES": cem_max_cycles,
         "BUS_CLOCK_NEGEDGE": bus_clock_negedge,
         "R_FIFO_DEPTH": r_fifo_depth,
     }
+    if cem_max_cycles is not None:
+        parameters["CEM_MAX_CYCLES"] = cem_max_cycles
     sim = os.getenv("SIM", "icarus")
     runner = get_runner(sim)
-    build_dir = proj_path / f"sim_build_apmemory_{pushout}_{init_byte}_{cem_max_cycles}_{bus_clock_negedge}_{r_fifo_depth}"
+    build_dir = proj_path / f"sim_build_apmemory_{pushout}_{init_byte}_{cem_max_cycles or 'def'}_{bus_clock_negedge}_{r_fifo_depth}{build_suffix}"
+    if clk_period_ns != 20:
+        build_dir = build_dir.with_name(build_dir.name + f"_{clk_period_ns}ns")
     runner.build(
         sources=sources,
         hdl_toplevel="Quad_Octal_Memory_Controller_apm_wrapper",
@@ -908,6 +915,7 @@ def run(test_filter=None, pushout=0, wave=False, init_byte=-1, cem_max_cycles=35
         build_dir=build_dir,
         waves=wave,
         parameters=parameters,
+        extra_env={"CLK_PERIOD_NS": str(clk_period_ns)},
     )
 
 
@@ -918,6 +926,18 @@ def test_quad_octal_apmemory_model():
 def test_quad_octal_apmemory_model_posedge_bus_clock():
     """All tests with the bus clock from the posedge register (BUS_CLOCK_NEGEDGE = 0, edge aligned)."""
     run(test_filter=os.getenv("TEST_FILTER"), bus_clock_negedge=0)
+
+
+def test_quad_octal_apmemory_model_slow_clock():
+    """
+    Data and CE# tests at the lowest supported clk (CLK_FREQ_MIN_HZ = 10 MHz, 100 ns): the memory model checks tCEM
+    in real time, ce_low_time_test checks the longest CE# low time of a 256-beat burst.
+    """
+    run(
+        test_filter="write_read_roundtrip_test|single_word_consistency_test|back_to_back_test|ce_low_time_test"
+        "|random_stall_test|dma_copy_test|queued_bursts_with_stall_test",
+        clk_period_ns=100,
+    )
 
 
 def test_quad_octal_apmemory_model_short_cem():
@@ -951,6 +971,12 @@ def test_quad_octal_apmemory_model_buffer_estimate():
         for depth in [0, 2, 4, 8, 32]:
             os.environ["BUFFER_DEPTH"] = str(depth)
             run(test_filter="buffer_estimate_test", r_fifo_depth=depth)
+
+
+def test_quad_octal_apmemory_model_sustained():
+    """Long run with one workload, see sustained_test (skipped if $SUSTAINED is not set)."""
+    if os.getenv("SUSTAINED"):
+        run(test_filter="sustained_test", build_suffix="_" + os.environ["SUSTAINED_PATTERN"])
 
 
 def test_quad_octal_apmemory_model_refresh_pushout():
@@ -1074,6 +1100,84 @@ async def throughput_test(dut):
                 )
                 dut._log.info(lines[-1])
     with open(os.environ["THROUGHPUT"], "w") as f:
+        f.write("\n".join(lines) + "\n")
+    check_no_model_errors(dut, before)
+
+
+@cocotb.test(skip=os.getenv("SUSTAINED") is None)
+async def sustained_test(dut):
+    """
+    Long run with one workload ($SUSTAINED_PATTERN) for $SUSTAINED_MS of simulated time. 8 bursts are kept in
+    flight all the time; throughput is reported per 10 ms window and in total, appended to $SUSTAINED.
+    read256 / write256: 256-beat INCR bursts. copy16: 16-beat reads and writes alternating (DMA copy).
+    read16_stall: 16-beat reads with RREADY low in a random 30 % of the cycles. Read data is checked.
+    """
+    workload = os.environ["SUSTAINED_PATTERN"]
+    duration_ns = float(os.getenv("SUSTAINED_MS", "100")) * 1e6
+    window_ns = 10e6
+    region = 0x8000  # the model has 2^14 words per chip, the bursts wrap inside the first 32 KB
+    axi = await setup(dut)
+    before = model_errors(dut)
+    reference = bytearray(pattern(region, 1))
+    await with_timeout(axi.write(0, bytes(reference)), timeout_us=20000)
+    await wait_idle(dut)
+
+    beats = 256 if workload.endswith("256") else 16
+    size = 4 * beats
+    if workload == "read16_stall":
+        rnd = random.Random(7)
+
+        def pauses():
+            while True:
+                yield rnd.random() < 0.3
+
+        axi.read_if.r_channel.set_pause_generator(pauses())
+
+    async def burst(i):
+        addr = (i * size) % region
+        if workload.startswith("read") or (workload == "copy16" and i % 2 == 0):
+            data = (await axi.read(addr, size)).data
+            assert data == reference[addr : addr + size], f"read data wrong at {addr:#x}"
+        else:
+            data = pattern(size, i)
+            await axi.write(addr, data)
+            reference[addr : addr + size] = data
+        return size
+
+    start = get_sim_time("ns")
+    window_start, window_bytes, total_bytes = start, 0, 0
+    lines = []
+    in_flight = []
+    i = 0
+    while True:
+        while len(in_flight) < 8:
+            in_flight.append(cocotb.start_soon(burst(i)))
+            i += 1
+        done = in_flight.pop(0)
+        if not done.done():
+            await with_timeout(done, timeout_us=5000)
+        nbytes = done.result()
+        window_bytes += nbytes
+        total_bytes += nbytes
+        now = get_sim_time("ns")
+        if now - window_start >= window_ns:
+            mbs = window_bytes / (now - window_start) * 1e3
+            lines.append(f"{workload:<13} {(window_start - start) / 1e6:>6.1f}-{(now - start) / 1e6:>6.1f} ms  {mbs:>6.1f} MB/s")
+            dut._log.info(lines[-1])
+            window_start, window_bytes = now, 0
+        if now - start >= duration_ns:
+            break
+    for t in in_flight:
+        if not t.done():
+            await with_timeout(t, timeout_us=5000)
+        total_bytes += t.result()
+    end = get_sim_time("ns")
+    lines.append(
+        f"{workload:<13} total {(end - start) / 1e6:.1f} ms, {total_bytes / 1e6:.2f} MB, {i} bursts: "
+        f"{total_bytes / (end - start) * 1e3:.1f} MB/s"
+    )
+    dut._log.info(lines[-1])
+    with open(os.environ["SUSTAINED"], "a") as f:
         f.write("\n".join(lines) + "\n")
     check_no_model_errors(dut, before)
 
