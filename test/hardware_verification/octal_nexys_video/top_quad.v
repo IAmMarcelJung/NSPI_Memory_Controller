@@ -4,7 +4,7 @@ module top_quad #(
     parameter ID_WIDTH = 1,
     parameter MAX_NUM_BYTES = $clog2(1024),
     parameter INTERFACE_TYPE = "OSPI",
-    parameter BUS_CLOCK_NEGEDGE = 0
+    parameter BUS_CLOCK_NEGEDGE = 1
 ) (
     input clk,
     input reset,

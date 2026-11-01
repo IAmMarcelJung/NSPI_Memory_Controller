@@ -17,8 +17,9 @@ module OctalSPI_quad #(
     parameter CHIP_TYPE = -1,  // 1 is Infineon, 2 is APMemory
     // 0: bus clock from a posedge register, the data changes together with the clock edge (edge aligned)
     // 1: bus clock from a negedge register half a clk period earlier, the data is centre aligned
-    //    (half a clk period setup and hold), read data is captured on the negedge as well
-    parameter BUS_CLOCK_NEGEDGE = 0
+    //    (half a clk period setup and hold), read data is captured on the negedge as well.
+    //    Default: the edge aligned variant has negative write hold at the PSRAM in the ASIC STA.
+    parameter BUS_CLOCK_NEGEDGE = 1
 ) (
     input clk,
     input reset_neg,

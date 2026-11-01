@@ -7,9 +7,9 @@
 
 set script_dir [file dirname [file normalize [info script]]]
 set repo_dir [file normalize $script_dir/../../..]
-# BUS_CLOCK_NEGEDGE=1 in the environment: bus clock from the negedge register (test variant), own build directory
-set negedge [expr {[info exists ::env(BUS_CLOCK_NEGEDGE)] && $::env(BUS_CLOCK_NEGEDGE) eq "1"}]
-set build_dir [expr {$negedge ? "$script_dir/build_negedge" : "$script_dir/build"}]
+# BUS_CLOCK_NEGEDGE=0 in the environment: bus clock from the posedge register (edge aligned variant), own build directory
+set negedge [expr {!([info exists ::env(BUS_CLOCK_NEGEDGE)] && $::env(BUS_CLOCK_NEGEDGE) eq "0")}]
+set build_dir [expr {$negedge ? "$script_dir/build" : "$script_dir/build_posedge"}]
 set part xc7a200tsbg484-1
 
 file mkdir $build_dir/ip
@@ -50,13 +50,12 @@ set_property file_type SystemVerilog [get_files *.v]
 
 read_xdc $script_dir/Nexys-Video-Master_Quad.xdc
 foreach chip {A B C D} {
-    if {$negedge} {
-        # the bus clock comes from bus_clock_neg_reg: it toggles on the falling edges of the system clock
-        # (its C pin is inverted, so edges 1 3 5 at that pin are the falling edges of sys_clk)
+    if {!$negedge} {
+        # the bus clock comes from bus_clock_p2_reg: it toggles on the rising edges of the system clock
         set fh [open $script_dir/Timing_RAM_$chip.xdc]
         set xdc [read $fh]
         close $fh
-        regsub -line {^create_generated_clock .*$} $xdc {create_generated_clock -name bus_clk -source [get_pins -of_objects [get_cells -hier -filter {NAME =~ *SPI_Transmitter/bus_clock_neg_reg_reg}] -filter {REF_PIN_NAME == C}] -edges {1 3 5} [get_ports o_spi_bus_clock]} xdc
+        regsub -line {^create_generated_clock .*$} $xdc {create_generated_clock -name bus_clk -source [get_pins -of_objects [get_cells -hier -filter {NAME =~ *SPI_Transmitter/bus_clock_p2_reg_reg}] -filter {REF_PIN_NAME == C}] -divide_by 2 [get_ports o_spi_bus_clock]} xdc
         set fh [open $build_dir/Timing_RAM_$chip.xdc w]
         puts $fh $xdc
         close $fh

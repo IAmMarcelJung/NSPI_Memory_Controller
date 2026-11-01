@@ -83,6 +83,10 @@ Notes:
 - `CLK_FREQ_HZ` (default 50 MHz) sets the time based limits: RESET# low 20 ms (`MEMORY_RESET_CYCLES`), tRST wait
   4 us, longest CE# low time 7 us (`CEM_MAX_CYCLES`). Both cycle counts can still be overridden. Only 50 MHz is
   verified; the fixed protocol settings (latency code 5, bus clock = clk / 2) are not derived.
+- `BUS_CLOCK_NEGEDGE` (default 1): the bus clock comes from a negedge register, so write data and CE# are centre
+  aligned to it (half a clk period setup and hold) and read data is captured on the negedge. 0 gives the old edge
+  aligned bus clock, which has negative write hold in the ASIC STA. Nexys: `BUS_CLOCK_NEGEDGE=0` for build_quad.tcl
+  builds that variant into `build_posedge/`.
 - The controller holds RESET# of the memories low for 20 ms after reset, then writes MR0 (fixed latency). AXI accesses are held off (busy) until then.
 - The Digilent adapter can show up as two JTAG targets, the scripts pick the one with the FPGA.
 - `axi_verification_test.tcl` (older) still has expectations from the old address mapping.

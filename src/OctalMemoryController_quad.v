@@ -14,7 +14,7 @@ module OctalMemoryController_quad #(
     parameter integer CLK_FREQ_HZ = 50_000_000,  // clk frequency, the time based limits below are derived from it
     parameter integer MEMORY_RESET_CYCLES = (CLK_FREQ_HZ + 49) / 50,  // RESET# low time of the memories (20 ms)
     parameter integer CEM_MAX_CYCLES = CLK_FREQ_HZ / 1000 * 7 / 1000,  // longest CE# low time (7 us, tCEM 8 us)
-    parameter BUS_CLOCK_NEGEDGE = 0  // 1: bus clock from a negedge register, centre aligned data (see OctalSPI_quad)
+    parameter BUS_CLOCK_NEGEDGE = 1  // 1: bus clock from a negedge register, centre aligned data; 0: edge aligned (see OctalSPI_quad)
 ) (
     input clk,
     input rstn,  // active low, asynchronous assert, synchronous release (SoC: resetn_async)

@@ -2,8 +2,8 @@
 #   vivado -mode batch -source slew_variants.tcl      (needs build/top_quad_routed.dcp from build_quad.tcl)
 # All four PSRAMs share one CLK net on the FMC board, so every variant affects all chips.
 set script_dir [file dirname [file normalize [info script]]]
-set negedge [expr {[info exists ::env(BUS_CLOCK_NEGEDGE)] && $::env(BUS_CLOCK_NEGEDGE) eq "1"}]
-set build_dir [expr {$negedge ? "$script_dir/build_negedge" : "$script_dir/build"}]
+set negedge [expr {!([info exists ::env(BUS_CLOCK_NEGEDGE)] && $::env(BUS_CLOCK_NEGEDGE) eq "0")}]
+set build_dir [expr {$negedge ? "$script_dir/build" : "$script_dir/build_posedge"}]
 open_checkpoint $build_dir/top_quad_routed.dcp
 set clk_port [get_ports o_spi_bus_clock]
 puts "default: DRIVE [get_property DRIVE $clk_port] SLEW [get_property SLEW $clk_port]"

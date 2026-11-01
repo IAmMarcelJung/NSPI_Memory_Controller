@@ -17,7 +17,7 @@ module Quad_Octal_Memory_Controller_apm_wrapper #(
     parameter integer T_PU = 150_000_000,
     parameter integer INIT_BYTE = -1,
     parameter integer CEM_MAX_CYCLES = 350,
-    parameter BUS_CLOCK_NEGEDGE = 0,
+    parameter BUS_CLOCK_NEGEDGE = 1,
     // test only: R channel FIFO between controller and master (0 = direct), to estimate what a skid buffer would gain
     parameter integer R_FIFO_DEPTH = 0
 ) (

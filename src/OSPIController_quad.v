@@ -25,7 +25,7 @@ module OSPIController_quad #(
     // Longest memory transaction in clk cycles. CE# must not stay low longer than tCEM (8 us, standard temperature),
     // otherwise the memory cannot refresh. A longer AXI burst is split, the default is 7 us (rounded down).
     parameter integer CEM_MAX_CYCLES = CLK_FREQ_HZ / 1000 * 7 / 1000,
-    parameter BUS_CLOCK_NEGEDGE = 0  // see OctalSPI_quad
+    parameter BUS_CLOCK_NEGEDGE = 1  // see OctalSPI_quad
 ) (
     input clk,
     input reset_neg,

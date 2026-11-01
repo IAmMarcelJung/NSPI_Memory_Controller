@@ -867,7 +867,7 @@ async def latency_setup_test(dut):
 
 
 # --------------------------------------------------------------------------------------------------------------
-def run(test_filter=None, pushout=0, wave=False, init_byte=-1, cem_max_cycles=350, bus_clock_negedge=0, r_fifo_depth=0):
+def run(test_filter=None, pushout=0, wave=False, init_byte=-1, cem_max_cycles=350, bus_clock_negedge=1, r_fifo_depth=0):
     proj_path = Path(__file__).resolve().parent
     sources = [
         proj_path / "../../src/OSPIController_quad.v",
@@ -915,9 +915,9 @@ def test_quad_octal_apmemory_model():
     run(test_filter=os.getenv("TEST_FILTER"), wave=bool(os.getenv("WAVES")))
 
 
-def test_quad_octal_apmemory_model_negedge_bus_clock():
-    """All tests with the bus clock from the negedge register (BUS_CLOCK_NEGEDGE = 1)."""
-    run(test_filter=os.getenv("TEST_FILTER"), bus_clock_negedge=1)
+def test_quad_octal_apmemory_model_posedge_bus_clock():
+    """All tests with the bus clock from the posedge register (BUS_CLOCK_NEGEDGE = 0, edge aligned)."""
+    run(test_filter=os.getenv("TEST_FILTER"), bus_clock_negedge=0)
 
 
 def test_quad_octal_apmemory_model_short_cem():

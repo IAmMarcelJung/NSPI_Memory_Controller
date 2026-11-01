@@ -9,12 +9,14 @@
 # PROCESSING_ORDER = LATE.
 #
 # How the interface behaves (from OctalSPI.v):
-#   * Bus clock = sys_clk / 2 = 50 MHz, from a negedge FF (bus_clock_p2_reg).
-#     It toggles on sys_clk FALLING edges.
+#   * Bus clock = sys_clk / 2 = 25 MHz, from a negedge FF (bus_clock_neg_reg,
+#     default BUS_CLOCK_NEGEDGE = 1). It toggles on sys_clk FALLING edges.
 #   * Write: data/DM/CE# launch on sys_clk RISING edges, the PSRAM samples on
-#     both bus clock edges -> data is centre-aligned (about 5 ns each side).
+#     both bus clock edges -> data is centre-aligned (about 10 ns each side).
 #   * Read: the PSRAM drives DQ edge-aligned to its own output strobe. The
-#     controller ignores DQS and samples DQ with sys_clk.
+#     controller ignores DQS and samples DQ on the sys_clk falling edge.
+#   * BUS_CLOCK_NEGEDGE=0 build (build_quad.tcl): bus clock from the posedge FF
+#     bus_clock_p2_reg, data edge-aligned; the script swaps section 2.
 ##############################################################################
 
 
@@ -45,12 +47,11 @@ set pcb_dq_max  0.75
 ##############################################################################
 
 # The register that drives o_spi_bus_clock. Check in the synthesized design:
-#   llength [get_cells -hier -filter {NAME =~ *SPI_Transmitter/bus_clock_p2_reg_reg}]  -> must be 1
+#   llength [get_cells -hier -filter {NAME =~ *SPI_Transmitter/bus_clock_neg_reg_reg}]  -> must be 1
 
-# Divide-by-2, rising edge on the sys_clk FALLING edge:
-# sys_clk edges: 1=rise, 2=fall, 3=rise, 4=fall, 5=rise, 6=fall
-# bus clock rises on edge 2, falls on edge 4, rises again on edge 6.
-create_generated_clock -name bus_clk -source [get_pins -of_objects [get_cells -hier -filter {NAME =~ *SPI_Transmitter/bus_clock_p2_reg_reg}] -filter {REF_PIN_NAME == C}] -divide_by 2 [get_ports o_spi_bus_clock]
+# Divide-by-2, toggles on the sys_clk FALLING edges. The C pin of the negedge FF
+# is inverted, so its edges 1 3 5 are the falling edges of sys_clk.
+create_generated_clock -name bus_clk -source [get_pins -of_objects [get_cells -hier -filter {NAME =~ *SPI_Transmitter/bus_clock_neg_reg_reg}] -filter {REF_PIN_NAME == C}] -edges {1 3 5} [get_ports o_spi_bus_clock]
 
 
 ##############################################################################
