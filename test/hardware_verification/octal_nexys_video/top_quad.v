@@ -139,7 +139,7 @@ module top_quad #(
         .BUS_CLOCK_NEGEDGE(BUS_CLOCK_NEGEDGE)
     ) Controller (
         .clk  (sys_clk),
-        .reset(sys_reset),
+        .rstn(~sys_reset),  // sys_reset is released synchronously
 
         // SPI Pins
         .o_spi_bus_clock(o_spi_bus_clock),

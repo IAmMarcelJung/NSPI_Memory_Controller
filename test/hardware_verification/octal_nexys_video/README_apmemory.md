@@ -78,6 +78,11 @@ Notes:
   lanes via WSTRB). FIXED / WRAP bursts and narrow bursts with more than one beat, and beats wider than the bus, are
   not executed: the memory is not accessed, the write gets BRESP = SLVERR, the read returns all beats with zero data
   and RRESP = SLVERR.
+- Reset: `rstn` is active low with asynchronous assert and synchronous release (SoC: `resetn_async`), all flip-flops
+  have an asynchronous reset.
+- `CLK_FREQ_HZ` (default 50 MHz) sets the time based limits: RESET# low 20 ms (`MEMORY_RESET_CYCLES`), tRST wait
+  4 us, longest CE# low time 7 us (`CEM_MAX_CYCLES`). Both cycle counts can still be overridden. Only 50 MHz is
+  verified; the fixed protocol settings (latency code 5, bus clock = clk / 2) are not derived.
 - The controller holds RESET# of the memories low for 20 ms after reset, then writes MR0 (fixed latency). AXI accesses are held off (busy) until then.
 - The Digilent adapter can show up as two JTAG targets, the scripts pick the one with the FPGA.
 - `axi_verification_test.tcl` (older) still has expectations from the old address mapping.

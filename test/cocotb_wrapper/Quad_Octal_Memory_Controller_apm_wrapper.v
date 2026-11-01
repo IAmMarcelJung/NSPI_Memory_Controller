@@ -151,7 +151,7 @@ module Quad_Octal_Memory_Controller_apm_wrapper #(
         .BUS_CLOCK_NEGEDGE(BUS_CLOCK_NEGEDGE)
     ) Controller (
         .clk  (clk),
-        .reset(reset),
+        .rstn(~reset),
 
         // SPI Pins
         .o_spi_bus_clock(bus_clock),

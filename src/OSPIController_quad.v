@@ -16,13 +16,15 @@ module OSPIController_quad #(
     parameter DATA_WIDTH = 32,
     parameter STRB_WIDTH = DATA_WIDTH / 8,
     parameter CHIP_TYPE = -1,  // 1 is Infineon, 2 is APMemory
-    // RESET# of the memories is held low this many clk cycles after reset (default 20 ms at 50 MHz).
+    // clk frequency: the time based limits below are derived from it (verified at 50 MHz)
+    parameter integer CLK_FREQ_HZ = 50_000_000,
+    // RESET# of the memories is held low this many clk cycles after reset (default 20 ms).
     // It must cover tRP (1 us) and tPU (150 us after the memory supply is stable) - on the Nexys Video the FMC
     // supply only ramps up after the FPGA configuration, 400 us were too short there.
-    parameter integer MEMORY_RESET_CYCLES = 1_000_000,
+    parameter integer MEMORY_RESET_CYCLES = (CLK_FREQ_HZ + 49) / 50,
     // Longest memory transaction in clk cycles. CE# must not stay low longer than tCEM (8 us, standard temperature),
-    // otherwise the memory cannot refresh. A longer AXI burst is split, the default is 7 us at 50 MHz.
-    parameter integer CEM_MAX_CYCLES = 350,
+    // otherwise the memory cannot refresh. A longer AXI burst is split, the default is 7 us (rounded down).
+    parameter integer CEM_MAX_CYCLES = CLK_FREQ_HZ / 1000 * 7 / 1000,
     parameter BUS_CLOCK_NEGEDGE = 0  // see OctalSPI_quad
 ) (
     input clk,
@@ -71,9 +73,10 @@ module OSPIController_quad #(
     localparam [7:0] APMEMORY_MR0 = 8'b0010_1001;
     localparam [DATA_WIDTH-1:0] CONFIG_DATA = (CHIP_TYPE == 1) ? {24'd0, CONFIG_QSPI_ENABLE} : {STRB_WIDTH{APMEMORY_MR0}};
 
-    // After RESET# went high tRST (2 us) has to pass before the first command, RESET_RECOVERY_CYCLES gives 4 us.
+    // After RESET# went high tRST (2 us) has to pass before the first command, RESET_RECOVERY_CYCLES gives 4 us
+    // (rounded up).
     localparam integer RESET_CYCLES = MEMORY_RESET_CYCLES;
-    localparam integer RESET_RECOVERY_CYCLES = 200;
+    localparam integer RESET_RECOVERY_CYCLES = (CLK_FREQ_HZ + 249_999) / 250_000;
 
     // Logic stuff
     reg  [ OPCODE_LENGTH-1:0] opcode_nxt;
@@ -152,7 +155,7 @@ module OSPIController_quad #(
     reg init_done;
     wire config_start = memory_ready & ~init_done & ~config_is_config_operation & (control_state_reg == IDLE);
 
-    always @(posedge clk) begin
+    always @(posedge clk or negedge reset_neg) begin
         if (!reset_neg) begin
             reset_counter <= 0;
             reset_spi <= 1'b0;
@@ -267,24 +270,7 @@ module OSPIController_quad #(
     end
 
 
-    always @(posedge clk) begin : control_register
-        address_reg <= address_nxt;
-        opcode_reg <= opcode_nxt;
-        control_state_reg <= control_state_nxt;
-        delay_fsm <= 0;
-        if (control_state_reg == IDLE) cem_counter <= 0;
-        else if (!cem_timeout) cem_counter <= cem_counter + 1;
-
-        if (control_state_reg == WAIT) begin
-            delay_fsm <= delay_fsm + 1;
-        end
-
-        if (config_start) config_is_config_operation <= 1'b1;
-        if (control_state_reg == WRITE_CONFIG && transmitter_finish) begin
-            config_is_config_operation <= 1'b0;
-            init_done <= 1'b1;
-        end
-
+    always @(posedge clk or negedge reset_neg) begin : control_register
         if (!reset_neg) begin
             control_state_reg <= IDLE;
             address_reg <= 0;
@@ -292,6 +278,24 @@ module OSPIController_quad #(
             config_is_config_operation <= 1'b0;
             init_done <= 1'b0;
             cem_counter <= 0;
+            delay_fsm <= 0;
+        end else begin
+            address_reg <= address_nxt;
+            opcode_reg <= opcode_nxt;
+            control_state_reg <= control_state_nxt;
+            delay_fsm <= 0;
+            if (control_state_reg == IDLE) cem_counter <= 0;
+            else if (!cem_timeout) cem_counter <= cem_counter + 1;
+
+            if (control_state_reg == WAIT) begin
+                delay_fsm <= delay_fsm + 1;
+            end
+
+            if (config_start) config_is_config_operation <= 1'b1;
+            if (control_state_reg == WRITE_CONFIG && transmitter_finish) begin
+                config_is_config_operation <= 1'b0;
+                init_done <= 1'b1;
+            end
         end
     end
 
@@ -350,19 +354,7 @@ module OSPIController_quad #(
     // problem: when an unalligned read is done, some old data still resides in the read register
     // either it should be reset to 0 or masked out by the byte strobe thingy (issue #18)
 
-    always @(posedge clk) begin : data_register
-        data_in_muxed_reg <= data_in_muxed_nxt;
-        data_mask_reg <= data_mask_nxt;
-        last_word_reg <= last_word_nxt;
-        read_next_word_reg <= read_next_word_nxt;
-        write_next_word_reg <= write_next_word_nxt;
-        config_data_reg <= config_data_nxt;
-        write_stop_reg <= write_stop_nxt;
-
-        if (spi_read_next_byte) begin
-            data_read_reg <= read_word;
-        end
-
+    always @(posedge clk or negedge reset_neg) begin : data_register
         if (!reset_neg) begin
             data_in_muxed_reg <= 0;
             data_mask_reg <= 0;
@@ -374,6 +366,18 @@ module OSPIController_quad #(
             config_data_reg <= CONFIG_DATA;  // this is set only on reset - it should be more configurable (issue #16)
             // problem is, that on the go signal, the transmitter is started. So on the next clock edge it will sample the data.
             // if the config_data_nxt is set to the correct value, then it arrives a cycle late.
+        end else begin
+            data_in_muxed_reg <= data_in_muxed_nxt;
+            data_mask_reg <= data_mask_nxt;
+            last_word_reg <= last_word_nxt;
+            read_next_word_reg <= read_next_word_nxt;
+            write_next_word_reg <= write_next_word_nxt;
+            config_data_reg <= config_data_nxt;
+            write_stop_reg <= write_stop_nxt;
+
+            if (spi_read_next_byte) begin
+                data_read_reg <= read_word;
+            end
         end
     end
 

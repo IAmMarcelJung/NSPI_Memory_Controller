@@ -95,7 +95,7 @@ module Quad_Octal_Memory_Controller_wrapper #(
         .CHIP_TYPE (INFINEON_CHIP)
     ) Controller (
         .clk  (clk),
-        .reset(reset),
+        .rstn(~reset),
 
         // SPI Pins
         .o_spi_bus_clock(bus_clock),

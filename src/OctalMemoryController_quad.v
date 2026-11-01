@@ -11,12 +11,13 @@ module OctalMemoryController_quad #(
     parameter STRB_WIDTH = (DATA_WIDTH / 8),
     parameter ID_WIDTH = 8,
     parameter CHIP_TYPE = -1,  // 1 for simulation with Infineon model, 2 for hardware with APMemory
-    parameter integer MEMORY_RESET_CYCLES = 1_000_000,  // RESET# low time of the memories in clk cycles
-    parameter integer CEM_MAX_CYCLES = 350,  // longest CE# low time in clk cycles (tCEM 8 us, 7 us at 50 MHz)
+    parameter integer CLK_FREQ_HZ = 50_000_000,  // clk frequency, the time based limits below are derived from it
+    parameter integer MEMORY_RESET_CYCLES = (CLK_FREQ_HZ + 49) / 50,  // RESET# low time of the memories (20 ms)
+    parameter integer CEM_MAX_CYCLES = CLK_FREQ_HZ / 1000 * 7 / 1000,  // longest CE# low time (7 us, tCEM 8 us)
     parameter BUS_CLOCK_NEGEDGE = 0  // 1: bus clock from a negedge register, centre aligned data (see OctalSPI_quad)
 ) (
     input clk,
-    input reset,
+    input rstn,  // active low, asynchronous assert, synchronous release (SoC: resetn_async)
 
     // SPI Pins
     output o_spi_bus_clock,
@@ -90,12 +91,13 @@ module OctalMemoryController_quad #(
         .ADDRESS_LENGTH(ADDR_WIDTH),
         .DATA_WIDTH(DATA_WIDTH),
         .CHIP_TYPE(CHIP_TYPE),
+        .CLK_FREQ_HZ(CLK_FREQ_HZ),
         .MEMORY_RESET_CYCLES(MEMORY_RESET_CYCLES),
         .CEM_MAX_CYCLES(CEM_MAX_CYCLES),
         .BUS_CLOCK_NEGEDGE(BUS_CLOCK_NEGEDGE)
     ) SPI_Controller (
         .clk(clk),
-        .reset_neg(!reset),
+        .reset_neg(rstn),
         .go(axi_start_transaction),
 
         .i_address(axi_address),
@@ -130,7 +132,7 @@ module OctalMemoryController_quad #(
         .STRB_WIDTH(STRB_WIDTH)
     ) AXI_Interface (
         .clk(clk),
-        .rst_neg(!reset),
+        .rst_neg(rstn),
 
         // Control Interface Pins
         .i_write_word_ready(spi_next_word),

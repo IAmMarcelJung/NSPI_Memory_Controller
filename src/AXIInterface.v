@@ -328,21 +328,7 @@ module AXIInterface #(
         endcase
     end
 
-    always @(posedge clk) begin
-        write_state_reg <= write_state_next;
-
-        write_id_reg <= write_id_next;
-        write_addr_reg <= write_addr_next;
-        write_count_reg <= write_count_next;
-        write_size_reg <= write_size_next;
-        write_burst_reg <= write_burst_next;
-        write_error_reg <= write_error_next;
-
-        s_axi_awready_reg <= s_axi_awready_next;
-        s_axi_bid_reg <= s_axi_bid_next;
-        s_axi_bresp_reg <= s_axi_bresp_next;
-        s_axi_bvalid_reg <= s_axi_bvalid_next;
-
+    always @(posedge clk or negedge rst_neg) begin
         if (!rst_neg) begin
             write_state_reg   <= WRITE_STATE_IDLE;
             write_id_reg      <= {ID_WIDTH{1'b0}};
@@ -356,6 +342,20 @@ module AXIInterface #(
             s_axi_bvalid_reg  <= 1'b0;
             s_axi_bid_reg     <= {ID_WIDTH{1'b0}};
             s_axi_bresp_reg   <= RESP_OKAY;
+        end else begin
+            write_state_reg <= write_state_next;
+
+            write_id_reg <= write_id_next;
+            write_addr_reg <= write_addr_next;
+            write_count_reg <= write_count_next;
+            write_size_reg <= write_size_next;
+            write_burst_reg <= write_burst_next;
+            write_error_reg <= write_error_next;
+
+            s_axi_awready_reg <= s_axi_awready_next;
+            s_axi_bid_reg <= s_axi_bid_next;
+            s_axi_bresp_reg <= s_axi_bresp_next;
+            s_axi_bvalid_reg <= s_axi_bvalid_next;
         end
     end
 
@@ -443,40 +443,12 @@ module AXIInterface #(
         endcase
     end
 
-    always @(posedge clk) begin
-        if (start_write | start_read) mem_write_reg <= start_write;
+    always @(posedge clk or negedge rst_neg) begin
         if (!rst_neg) mem_write_reg <= 1'b0;
+        else if (start_write | start_read) mem_write_reg <= start_write;
     end
 
-    always @(posedge clk) begin
-        read_state_reg <= read_state_next;
-
-        read_id_reg <= read_id_next;
-        read_addr_reg <= read_addr_next;
-        read_count_reg <= read_count_next;
-        read_size_reg <= read_size_next;
-        read_burst_reg <= read_burst_next;
-        read_drop_reg <= read_drop_next;
-
-        s_axi_arready_reg <= s_axi_arready_next;
-        s_axi_rid_reg <= s_axi_rid_next;
-        s_axi_rresp_reg <= s_axi_rresp_next;
-        s_axi_rlast_reg <= s_axi_rlast_next;
-        s_axi_rvalid_reg <= s_axi_rvalid_next;
-
-        if (mem_rd_en) begin
-            s_axi_rdata_reg <= i_read_data;
-        end else if (error_rd_en) begin
-            s_axi_rdata_reg <= {DATA_WIDTH{1'b0}};
-        end
-
-        if (!s_axi_rvalid_pipe_reg || s_axi_rready) begin
-            s_axi_rid_pipe_reg <= s_axi_rid_reg;
-            s_axi_rdata_pipe_reg <= s_axi_rdata_reg;
-            s_axi_rresp_pipe_reg <= s_axi_rresp_reg;
-            s_axi_rvalid_pipe_reg <= s_axi_rvalid_reg;
-        end
-
+    always @(posedge clk or negedge rst_neg) begin
         if (!rst_neg) begin
             read_state_reg        <= READ_STATE_IDLE;
             read_id_reg           <= {ID_WIDTH{1'b0}};
@@ -496,6 +468,34 @@ module AXIInterface #(
             s_axi_rid_pipe_reg    <= {ID_WIDTH{1'b0}};
             s_axi_rdata_reg       <= {DATA_WIDTH{1'b0}};
             s_axi_rdata_pipe_reg  <= {DATA_WIDTH{1'b0}};
+        end else begin
+            read_state_reg <= read_state_next;
+
+            read_id_reg <= read_id_next;
+            read_addr_reg <= read_addr_next;
+            read_count_reg <= read_count_next;
+            read_size_reg <= read_size_next;
+            read_burst_reg <= read_burst_next;
+            read_drop_reg <= read_drop_next;
+
+            s_axi_arready_reg <= s_axi_arready_next;
+            s_axi_rid_reg <= s_axi_rid_next;
+            s_axi_rresp_reg <= s_axi_rresp_next;
+            s_axi_rlast_reg <= s_axi_rlast_next;
+            s_axi_rvalid_reg <= s_axi_rvalid_next;
+
+            if (mem_rd_en) begin
+                s_axi_rdata_reg <= i_read_data;
+            end else if (error_rd_en) begin
+                s_axi_rdata_reg <= {DATA_WIDTH{1'b0}};
+            end
+
+            if (!s_axi_rvalid_pipe_reg || s_axi_rready) begin
+                s_axi_rid_pipe_reg <= s_axi_rid_reg;
+                s_axi_rdata_pipe_reg <= s_axi_rdata_reg;
+                s_axi_rresp_pipe_reg <= s_axi_rresp_reg;
+                s_axi_rvalid_pipe_reg <= s_axi_rvalid_reg;
+            end
         end
     end
 

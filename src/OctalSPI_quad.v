@@ -148,7 +148,7 @@ module OctalSPI_quad #(
     // bus_clock_neg_reg is bus_clock_p2_reg half a clk earlier: it takes bus_clock_p2_nxt on the negedge before
     // bus_clock_p2_reg takes it on the posedge (same edges, also at the start and end of a transaction)
     reg bus_clock_neg_reg;
-    always @(negedge clk) begin
+    always @(negedge clk or negedge reset_neg) begin
         if (~reset_neg) bus_clock_neg_reg <= 1'b0;
         else bus_clock_neg_reg <= bus_clock_p2_nxt;
     end
@@ -181,7 +181,7 @@ module OctalSPI_quad #(
     end
 
 
-    always @(posedge clk) begin : clock_register
+    always @(posedge clk or negedge reset_neg) begin : clock_register
         if (~reset_neg) begin
             bus_clock_reg <= 0;
             bus_clock_p2_reg <= 0;
@@ -278,7 +278,7 @@ module OctalSPI_quad #(
     end
 
 
-    always @(posedge clk) begin : state_machine_register
+    always @(posedge clk or negedge reset_neg) begin : state_machine_register
         if (~reset_neg) begin
             state_reg <= IDLE;
             count_reg <= 0;
@@ -357,9 +357,10 @@ module OctalSPI_quad #(
     end
 
 
-    always @(posedge clk) begin : data_register
+    always @(posedge clk or negedge reset_neg) begin : data_register
         if (~reset_neg) begin
             data_out_reg <= 0;
+            data_read_reg <= 0;
             last_word_reg <= 0;
             recieved_next_word_reg <= 0;
             need_buffer_word_reg <= 0;
