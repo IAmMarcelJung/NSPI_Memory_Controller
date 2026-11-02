@@ -162,6 +162,60 @@ async def reset_sequence_test(dut):
 
 
 @cocotb.test()
+async def axi_quiet_during_reset_test(dut):
+    """
+    AXI requests that are already pending while the system reset is held, and while the controller initializes
+    the memories after it (RESET# low, tRST, MR0 write), must not be answered: AWREADY, WREADY, ARREADY, BVALID and
+    RVALID stay low until the initialization is done, and the requests don't touch the memory. Afterwards they run
+    normally.
+    """
+    cocotb.start_soon(Clock(dut.clk, CLK_PERIOD_NS, "ns").start())
+    dut.test_number.value = dut.test_number.value + 1
+    dut.reset.value = 1
+    await ClockCycles(dut.clk, 2)  # the outputs are X until the first clock edge in reset
+    # the master gets no reset signal, so it keeps its requests valid during the reset
+    axi = AxiMaster(AxiBus.from_prefix(dut, "s_axi"), dut.clk)
+    init_done = dut.Controller.SPI_Controller.init_done
+    outputs = {name: getattr(dut, f"s_axi_{name}") for name in ["awready", "wready", "bvalid", "arready", "rvalid"]}
+
+    def check_quiet(phase):
+        for name, sig in outputs.items():
+            assert sig.value == 0, f"{name} = {sig.value} {phase} at {get_sim_time('ns')} ns"
+
+    before = model_errors(dut)
+    write_addr, read_addr = 0xA000, 0xA040
+    write_data, read_data = pattern(64, 90), pattern(64, 91)
+    mem_set(dut, write_addr, bytes(64))
+    mem_set(dut, read_addr, read_data)
+    write = cocotb.start_soon(axi.write(write_addr, write_data, awid=0x31))
+    read = cocotb.start_soon(axi.read(read_addr, 64, arid=0x32))
+
+    for _ in range(50):
+        await RisingEdge(dut.clk)
+        check_quiet("during reset")
+    assert dut.s_axi_awvalid.value == 1 and dut.s_axi_wvalid.value == 1, "write request not pending"
+    assert dut.s_axi_arvalid.value == 1, "read request not pending"
+
+    dut.reset.value = 0
+    cycles = 0
+    while init_done.value != 1:
+        await RisingEdge(dut.clk)
+        check_quiet("during the memory initialization")
+        cycles += 1
+        assert cycles < 40000, "initialization did not finish"
+    assert dut.s_axi_awvalid.value == 1 and dut.s_axi_arvalid.value == 1, "requests not pending until init done"
+    assert bytes(mem_get(dut, write_addr, 64)) == bytes(64), "memory written before init done"
+
+    write_result = await with_timeout(write)
+    read_result = await with_timeout(read)
+    await wait_idle(dut)
+    assert write_result.resp == AxiResp.OKAY
+    assert read_result.resp == AxiResp.OKAY and read_result.data == read_data
+    assert bytes(mem_get(dut, write_addr, 64)) == write_data
+    check_no_model_errors(dut, before)
+
+
+@cocotb.test()
 async def no_unknown_commands_test(dut):
     """The APMemory command set has no write enable (06h) - the controller must not send unknown commands."""
     axi = await setup(dut)
