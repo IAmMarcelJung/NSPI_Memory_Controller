@@ -869,6 +869,47 @@ async def latency_setup_test(dut):
         assert int(m.mr0.value) & 0x20, f"chip {i}: MR0 = {int(m.mr0.value):#04x}, latency is still variable"
 
 
+@cocotb.test()
+async def reset_during_read_test(dut):
+    """
+    A system reset in the middle of a read burst (async reset: CE# goes high right after a clock edge, while the
+    memories still drive read data) must leave the memories usable: after the reset the controller re-initializes
+    them (MR0 write) and reads and writes work again. Found in the SoC simulation (chip-di-owas).
+    """
+    axi = await setup(dut)
+    data = pattern(1024, 11)
+    await with_timeout(axi.write(0x0, data))
+    await wait_idle(dut)
+    for m in models(dut):
+        m.mr0.value = 0  # so the MR0 write after the reset is visible
+
+    read = cocotb.start_soon(axi.read(0x0, 1024))
+    m0 = dut.gen_memory[0].Memory
+    while m0.dq_oe.value != 1:
+        await RisingEdge(dut.clk)
+    await ClockCycles(dut.clk, 8)
+    # 1 ns after a memory clock edge: the read data of that edge (T_DQSCK later) is still pending
+    await RisingEdge(m0.CLK)
+    await Timer(1, unit="ns")
+    dut.reset.value = 1
+    await ClockCycles(dut.clk, 10)
+    read.cancel()
+    dut.reset.value = 0
+    await ClockCycles(dut.clk, 2)
+
+    before = model_errors(dut)
+    before_unknown = unknown_commands(dut)
+    await RisingEdge(dut.spi_reset_neg)
+    await Timer(T_RST_NS + 100, unit="ns")
+    readback = await with_timeout(axi.read(0x0, 1024))
+    await wait_idle(dut)
+    for i, m in enumerate(models(dut)):
+        assert int(m.mr0.value) & 0x20, f"chip {i}: MR0 = {int(m.mr0.value):#04x}, not written after the reset"
+    assert unknown_commands(dut) == before_unknown, "unknown commands after the reset"
+    assert readback.data == data
+    check_no_model_errors(dut, before)
+
+
 # --------------------------------------------------------------------------------------------------------------
 def run(test_filter=None, pushout=0, wave=False, init_byte=-1, cem_max_cycles=None, bus_clock_negedge=1, r_fifo_depth=0, build_suffix="",
         clk_period_ns=20):

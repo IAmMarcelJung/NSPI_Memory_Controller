@@ -85,8 +85,11 @@ module aps12808l_model #(
     reg dq_oe;
     reg dqs_out;
     reg dqs_oe;
-    assign DQ  = dq_oe ? dq_out : 8'bz;
-    assign DQS = dqs_oe ? dqs_out : 1'bz;
+    // outputs only while CE# is low (+ tHZ): read data scheduled T_DQSCK after
+    // a clock edge must not turn the drivers on again after CE# went high
+    reg ce_out_en = 1'b0;
+    assign DQ  = (dq_oe && ce_out_en) ? dq_out : 8'bz;
+    assign DQS = (dqs_oe && ce_out_en) ? dqs_out : 1'bz;
 
     // timing bookkeeping
     time t_reset_rise;
@@ -257,6 +260,9 @@ module aps12808l_model #(
         if (t_ce_fall > 0 && ($time - t_ce_fall) < T_RC) error("tRC: CE# cycle time too short");
 
         t_ce_fall = $time;
+        dq_oe = 1'b0;
+        dqs_oe = 1'b0;
+        ce_out_en = 1'b1;
         in_transaction = 1;
         rise_cnt = 0;
         byte_cnt = 0;
@@ -279,6 +285,7 @@ module aps12808l_model #(
         in_transaction = 0;
         dq_oe <= #(1000) 1'b0;  // tHZ
         dqs_oe <= #(1000) 1'b0;
+        ce_out_en <= #(1000) 1'b0;
     end
 
     // ---------------- clock ----------------
