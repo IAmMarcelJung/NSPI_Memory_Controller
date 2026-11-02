@@ -83,17 +83,49 @@ def parse(path):
     return [(l[1], l[2:]) for l in lines]
 
 
+def expected_reads():
+    """(address, number of words) of every read in SCENARIO, in order."""
+    return [(f"{addr:08x}", arg) for op, addr, arg in SCENARIO if op == "R"]
+
+
+def is_word(w):
+    return len(w) == 8 and all(c in "0123456789abcdefx" for c in w.lower())
+
+
 def compare(hw_path, sim_path):
-    # a read without data = the transaction hung, nothing after it ran
-    hw = [r for r in parse(hw_path) if r[1]]
-    sim = [r for r in parse(sim_path) if r[1]]
+    """
+    Compare both results against each other and against SCENARIO. Every expected word that is missing (hung or
+    truncated read), malformed or different counts as one mismatch, so an incomplete result never compares clean.
+    """
+    expected = expected_reads()
+    hw = parse(hw_path)
+    sim = parse(sim_path)
     mismatches = 0
-    if len(hw) != len(sim):
-        print(f"different number of completed reads: hw {len(hw)}, sim {len(sim)}")
+
+    def report(msg):
+        nonlocal mismatches
         mismatches += 1
-    for n, ((ha, hw_words), (sa, sim_words)) in enumerate(zip(hw, sim)):
-        assert ha == sa
-        for i, (h, s) in enumerate(zip(hw_words, sim_words)):
+        if mismatches <= 40:
+            print(msg)
+
+    for name, result in (("hw", hw), ("sim", sim)):
+        if len(result) != len(expected):
+            print(f"{name}: {len(result)} reads, scenario has {len(expected)}")
+
+    for n, (addr, length) in enumerate(expected):
+        hw_addr, hw_words = hw[n] if n < len(hw) else (None, [])
+        sim_addr, sim_words = sim[n] if n < len(sim) else (None, [])
+        if (hw_addr is not None and hw_addr != addr) or (sim_addr is not None and sim_addr != addr):
+            # result out of step with the scenario: every word of this read is a mismatch
+            for i in range(length):
+                report(f"read {n} @{addr} word {i}: address hw {hw_addr} sim {sim_addr}")
+            continue
+        for i in range(length):
+            h = hw_words[i] if i < len(hw_words) else None
+            s = sim_words[i] if i < len(sim_words) else None
+            if h is None or s is None or not is_word(h) or not is_word(s):
+                report(f"read {n} @{addr} word {i}: hw {h} sim {s} (missing or malformed)")
+                continue
             # sim byte "ee" = never written (model INIT_BYTE), the board then returns random data
             same = all(
                 sb in ("xx", "ee") or sb == hb
@@ -101,9 +133,13 @@ def compare(hw_path, sim_path):
                                   [s.lower()[j : j + 2] for j in range(0, 8, 2)])
             )
             if not same:
-                mismatches += 1
-                if mismatches <= 40:
-                    print(f"read {n} @{ha} word {i}: hw {h} sim {s}")
+                report(f"read {n} @{addr} word {i}: hw {h} sim {s}")
+        for name, words in (("hw", hw_words), ("sim", sim_words)):
+            if len(words) > length:
+                report(f"read {n} @{addr}: {name} has {len(words) - length} extra words")
+    for name, result in (("hw", hw), ("sim", sim)):
+        for n in range(len(expected), len(result)):
+            report(f"{name}: unexpected read {n} @{result[n][0]}")
     print(f"{mismatches} mismatching words")
     return mismatches
 
