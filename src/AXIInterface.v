@@ -182,6 +182,7 @@ module AXIInterface #(
     reg [ID_WIDTH-1:0] s_axi_rid_pipe_reg;
     reg [DATA_WIDTH-1:0] s_axi_rdata_pipe_reg;
     reg [1:0] s_axi_rresp_pipe_reg;
+    reg s_axi_rlast_pipe_reg;
     reg s_axi_rvalid_pipe_reg;
 
     assign s_axi_awready = s_axi_awready_reg;
@@ -196,7 +197,7 @@ module AXIInterface #(
     assign s_axi_rid = PIPELINE_OUTPUT ? s_axi_rid_pipe_reg : s_axi_rid_reg;
     assign s_axi_rdata = PIPELINE_OUTPUT ? s_axi_rdata_pipe_reg : s_axi_rdata_reg;
     assign s_axi_rresp = PIPELINE_OUTPUT ? s_axi_rresp_pipe_reg : s_axi_rresp_reg;
-    assign s_axi_rlast = s_axi_rlast_reg;//PIPELINE_OUTPUT ? s_axi_rlast_pipe_reg : s_axi_rlast_reg;
+    assign s_axi_rlast = PIPELINE_OUTPUT ? s_axi_rlast_pipe_reg : s_axi_rlast_reg;
     assign s_axi_rvalid = PIPELINE_OUTPUT ? s_axi_rvalid_pipe_reg : s_axi_rvalid_reg;
 
     // A burst is split into several memory transactions when the master stalls (WVALID low / RREADY low) or the
@@ -215,11 +216,14 @@ module AXIInterface #(
     wire aw_handshake = s_axi_awready & s_axi_awvalid;
     wire ar_handshake = s_axi_arready & s_axi_arvalid;
     wire mem_free = ~i_busy & ~s_axi_awready & ~s_axi_arready;
+    wire read_word_ready = i_read_word_ready & ~mem_write_reg;  // a read word arrives in this cycle
 
     wire want_restart_write = (write_state_reg == WRITE_STATE_BURST) & s_axi_wvalid;
     // a write starts with its first data beat, so a pending AW without W doesn't take the memory
     wire want_new_write = (write_state_reg == WRITE_STATE_IDLE) & s_axi_awvalid & s_axi_wvalid;
-    wire want_restart_read = (read_state_reg == READ_STATE_BURST) & read_can_load;
+    // not while a word arrives: a controller may end the transaction (busy low) in the cycle it delivers the
+    // last word (legacy SPIController), the burst is then finished and must not be restarted
+    wire want_restart_read = (read_state_reg == READ_STATE_BURST) & read_can_load & ~read_word_ready;
     wire want_new_read = (read_state_reg == READ_STATE_IDLE) & s_axi_arvalid;
     wire want_write = want_restart_write | want_new_write;
     wire want_read = want_restart_read | want_new_read;
@@ -241,7 +245,6 @@ module AXIInterface #(
     assign o_address = mem_write ? write_addr_next : read_addr_next;
     assign o_write_data = s_axi_wdata;
     assign o_write_data_valid = s_axi_wvalid;
-    wire read_word_ready = i_read_word_ready & ~mem_write_reg;
 
     wire read_last_word;
     // on the address handshake rlast still belongs to the previous burst, so use arlen there
@@ -461,6 +464,7 @@ module AXIInterface #(
             s_axi_rvalid_reg      <= 1'b0;
             s_axi_rvalid_pipe_reg <= 1'b0;
             s_axi_rlast_reg       <= 1'b0;
+            s_axi_rlast_pipe_reg  <= 1'b0;
             s_axi_rid_reg         <= {ID_WIDTH{1'b0}};
             s_axi_rresp_reg       <= RESP_OKAY;
             s_axi_rresp_pipe_reg  <= RESP_OKAY;
@@ -493,6 +497,7 @@ module AXIInterface #(
                 s_axi_rid_pipe_reg <= s_axi_rid_reg;
                 s_axi_rdata_pipe_reg <= s_axi_rdata_reg;
                 s_axi_rresp_pipe_reg <= s_axi_rresp_reg;
+                s_axi_rlast_pipe_reg <= s_axi_rlast_reg;
                 s_axi_rvalid_pipe_reg <= s_axi_rvalid_reg;
             end
         end
