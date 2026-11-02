@@ -88,6 +88,23 @@ def expected_reads():
     return [(f"{addr:08x}", arg) for op, addr, arg in SCENARIO if op == "R"]
 
 
+def expected_bytes():
+    """
+    For every read in SCENARIO, in order: per word the 4 expected bytes (MSB first, as printed), None for a byte
+    never written before that read (the board then returns random data).
+    """
+    mem = {}
+    out = []
+    for op, addr, arg in SCENARIO:
+        if op == "W":
+            for i, w in enumerate(arg):
+                for b in range(4):
+                    mem[addr + 4 * i + b] = (w >> (8 * b)) & 0xFF
+        else:
+            out.append([[mem.get(addr + 4 * i + b) for b in (3, 2, 1, 0)] for i in range(arg)])
+    return out
+
+
 def is_word(w):
     return len(w) == 8 and all(c in "0123456789abcdefx" for c in w.lower())
 
@@ -98,6 +115,7 @@ def compare(hw_path, sim_path):
     truncated read), malformed or different counts as one mismatch, so an incomplete result never compares clean.
     """
     expected = expected_reads()
+    exp_bytes = expected_bytes()
     hw = parse(hw_path)
     sim = parse(sim_path)
     mismatches = 0
@@ -126,14 +144,14 @@ def compare(hw_path, sim_path):
             if h is None or s is None or not is_word(h) or not is_word(s):
                 report(f"read {n} @{addr} word {i}: hw {h} sim {s} (missing or malformed)")
                 continue
-            # sim byte "ee" = never written (model INIT_BYTE), the board then returns random data
-            same = all(
-                sb in ("xx", "ee") or sb == hb
-                for hb, sb in zip([h.lower()[j : j + 2] for j in range(0, 8, 2)],
-                                  [s.lower()[j : j + 2] for j in range(0, 8, 2)])
-            )
-            if not same:
-                report(f"read {n} @{addr} word {i}: hw {h} sim {s}")
+            # written bytes: hw and sim must both match SCENARIO. Never written bytes are not checked
+            # (the board returns random data, the model its INIT_BYTE)
+            hb = [h.lower()[j : j + 2] for j in range(0, 8, 2)]
+            sb = [s.lower()[j : j + 2] for j in range(0, 8, 2)]
+            for e, hv, sv in zip(exp_bytes[n][i], hb, sb):
+                if e is not None and (hv != f"{e:02x}" or sv != f"{e:02x}"):
+                    report(f"read {n} @{addr} word {i}: hw {h} sim {s} expected byte {e:02x}")
+                    break
         for name, words in (("hw", hw_words), ("sim", sim_words)):
             if len(words) > length:
                 report(f"read {n} @{addr}: {name} has {len(words) - length} extra words")
