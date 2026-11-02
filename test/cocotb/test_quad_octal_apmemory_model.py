@@ -11,6 +11,7 @@ per chip, so AXI byte address A lives in chip byte A // 4, byte lane A % 4 is ch
 import itertools
 import os
 import random
+import re
 from pathlib import Path
 
 import cocotb
@@ -1109,7 +1110,7 @@ async def sustained_test(dut):
     """
     Long run with one workload ($SUSTAINED_PATTERN) for $SUSTAINED_MS of simulated time. 8 bursts are kept in
     flight all the time; throughput is reported per 10 ms window and in total, appended to $SUSTAINED.
-    read256 / write256: 256-beat INCR bursts. copy16: 16-beat reads and writes alternating (DMA copy).
+    read<N> / write<N>: N-beat INCR bursts (e.g. read256). copy16: 16-beat reads and writes alternating (DMA copy).
     read16_stall: 16-beat reads with RREADY low in a random 30 % of the cycles. Read data is checked.
     """
     workload = os.environ["SUSTAINED_PATTERN"]
@@ -1122,7 +1123,7 @@ async def sustained_test(dut):
     await with_timeout(axi.write(0, bytes(reference)), timeout_us=20000)
     await wait_idle(dut)
 
-    beats = 256 if workload.endswith("256") else 16
+    beats = int(re.match(r"[a-z]+(\d+)", workload).group(1))
     size = 4 * beats
     if workload == "read16_stall":
         rnd = random.Random(7)
