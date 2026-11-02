@@ -227,7 +227,7 @@ module OSPIController_quad #(
         case (control_state_reg)
             IDLE: begin
                 if (config_start) begin
-                    address_nxt = ADDRESS_LENGTH'(CONFIG_ADDRESS);
+                    address_nxt = CONFIG_ADDRESS;
                     opcode_nxt = HAS_WRITE_ENABLE ? OPCODE_WRITE_ENABLE : OPCODE_WRITE_ANY_REG;
                     control_state_nxt = HAS_WRITE_ENABLE ? WRITE_ENABLE : WRITE_CONFIG;
                 end else if (go) begin

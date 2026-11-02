@@ -109,19 +109,20 @@ module AXIInterface #(
     // bus width assertions
     initial begin
         if (WORD_SIZE * STRB_WIDTH != DATA_WIDTH) begin
-            $error("Error: AXI data width not evenly divisble (instance %m)");
+            $display("Error: AXI data width not evenly divisble (instance %m)");
             $finish;
         end
 
         if (2 ** $clog2(WORD_WIDTH) != WORD_WIDTH) begin
-            $error("Error: AXI word width must be even power of two (instance %m)");
+            $display("Error: AXI word width must be even power of two (instance %m)");
             $finish;
         end
     end
 
     localparam [1:0] RESP_OKAY = 2'b00;
     localparam [1:0] RESP_SLVERR = 2'b10;
-    localparam [2:0] SIZE_FULL = 3'($clog2(STRB_WIDTH));  // AxSIZE of a full width beat
+    localparam integer SIZE_FULL_INT = $clog2(STRB_WIDTH);
+    localparam [2:0] SIZE_FULL = SIZE_FULL_INT[2:0];  // AxSIZE of a full width beat
 
     // The memory is accessed as one linear word stream from the start address. Bursts that need anything else
     // (FIXED or WRAP with more than one beat, narrow beats in a burst, beats wider than the bus) are not executed:
@@ -278,8 +279,7 @@ module AXIInterface #(
                     write_id_next = s_axi_awid;
                     write_addr_next = s_axi_awaddr;
                     write_count_next = s_axi_awlen;
-                    write_size_next = s_axi_awsize < 3'($clog2(STRB_WIDTH)) ? s_axi_awsize :
-                        3'($clog2(STRB_WIDTH));
+                    write_size_next = s_axi_awsize < SIZE_FULL ? s_axi_awsize : SIZE_FULL;
                     write_burst_next = s_axi_awburst;
                     write_error_next = aw_unsupported;
 
@@ -387,8 +387,7 @@ module AXIInterface #(
                     read_id_next = s_axi_arid;
                     read_addr_next = s_axi_araddr;
                     read_count_next = s_axi_arlen;
-                    read_size_next = s_axi_arsize < 3'($clog2(STRB_WIDTH)) ? s_axi_arsize :
-                        3'($clog2(STRB_WIDTH));
+                    read_size_next = s_axi_arsize < SIZE_FULL ? s_axi_arsize : SIZE_FULL;
                     read_burst_next = s_axi_arburst;
                     // rlast is not cleared here: the last beat of the previous burst may still wait in the output
                     // register (RREADY low), rlast is set with every beat that is loaded

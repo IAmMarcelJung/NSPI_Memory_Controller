@@ -46,7 +46,6 @@ read_verilog [list \
     $script_dir/top_quad.v \
     $repo_dir/src/AXIInterface.v \
 ]
-set_property file_type SystemVerilog [get_files *.v]
 
 read_xdc $script_dir/Nexys-Video-Master_Quad.xdc
 foreach chip {A B C D} {
