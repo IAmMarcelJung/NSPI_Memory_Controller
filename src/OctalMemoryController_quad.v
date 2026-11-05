@@ -22,8 +22,8 @@ module OctalMemoryController_quad #(
     input rstn,  // active low, asynchronous assert, synchronous release (SoC: resetn_async)
 
     // SPI Pins
-    output o_spi_bus_clock,
-    output o_spi_bus_clock_neg,
+    output [3:0] o_spi_bus_clock,
+    output [3:0] o_spi_bus_clock_neg,
     output [3:0] o_spi_chip_select_neg,
     output o_spi_reset_neg,
 

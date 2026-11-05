@@ -30,7 +30,7 @@ module OctalSPI_quad #(
     input                       i_config_read_data,
     input                       i_config_write_data,
     input                       i_config_write_address,
-    input                       i_register_write,  // APMemory mode register write: latency 1
+    input                       i_register_write,        // APMemory mode register write: latency 1
     input                       i_last_word,
     input  [    STRB_WIDTH-1:0] i_data_word_mask,
     input  [    DATA_WIDTH-1:0] i_data_write,
@@ -40,8 +40,8 @@ module OctalSPI_quad #(
     output                      o_recieved_next_word,
 
     // OctalSPI Pins
-    output           o_bus_clock,
-    output           o_bus_clock_neg,
+    output     [3:0] o_bus_clock,
+    output     [3:0] o_bus_clock_neg,
     output reg [3:0] o_chip_select_neg,
 
     /* verilator lint_off UNUSEDSIGNAL */
@@ -91,10 +91,10 @@ module OctalSPI_quad #(
     assign o_data_output_enable = {4{en_data_out_reg}};
 
     // Bus Clock
-    reg bus_clock_reg;
-    reg bus_clock_nxt;
-    reg bus_clock_p2_reg;  // the bus clock has to be shifted a bit to guarantee that the data is present on the bus
-    reg bus_clock_p2_nxt;
+    reg [3:0] bus_clock_reg;
+    reg [3:0] bus_clock_nxt;
+    reg [3:0] bus_clock_p2_reg;  // the bus clock has to be shifted a bit to guarantee that the data is present on the bus
+    reg [3:0] bus_clock_p2_nxt;
 
     // states transmission FSM
     localparam NUM_STATES = 9;
@@ -148,12 +148,12 @@ module OctalSPI_quad #(
 
     // bus_clock_neg_reg is bus_clock_p2_reg half a clk earlier: it takes bus_clock_p2_nxt on the negedge before
     // bus_clock_p2_reg takes it on the posedge (same edges, also at the start and end of a transaction)
-    reg bus_clock_neg_reg;
+    reg [3:0] bus_clock_neg_reg;
     always @(negedge clk or negedge reset_neg) begin
-        if (~reset_neg) bus_clock_neg_reg <= 1'b0;
+        if (~reset_neg) bus_clock_neg_reg <= 4'h0;
         else bus_clock_neg_reg <= bus_clock_p2_nxt;
     end
-    wire bus_clock_out = BUS_CLOCK_NEGEDGE ? bus_clock_neg_reg : bus_clock_p2_reg;
+    wire [3:0] bus_clock_out = BUS_CLOCK_NEGEDGE ? bus_clock_neg_reg : bus_clock_p2_reg;
     assign o_bus_clock = bus_clock_out;
     assign o_bus_clock_neg = ~bus_clock_out;
     assign o_finish = (state_reg == FINISH);
@@ -172,8 +172,8 @@ module OctalSPI_quad #(
 
 
     always @(*) begin : clock_logic
-        bus_clock_nxt = 1'b0;
-        bus_clock_p2_nxt = 1'b0;
+        bus_clock_nxt = 4'h0;
+        bus_clock_p2_nxt = 4'h0;
 
         if (state_reg != IDLE & state_reg != CS_LOW & state_reg != CS_HIGH & state_reg != FINISH) begin
             bus_clock_nxt = ~bus_clock_reg;
@@ -184,8 +184,8 @@ module OctalSPI_quad #(
 
     always @(posedge clk or negedge reset_neg) begin : clock_register
         if (~reset_neg) begin
-            bus_clock_reg <= 0;
-            bus_clock_p2_reg <= 0;
+            bus_clock_reg <= 4'h0;
+            bus_clock_p2_reg <= 4'h0;
         end else begin
             bus_clock_reg <= bus_clock_nxt;
             bus_clock_p2_reg <= bus_clock_p2_nxt;  // a delayed clock is needed so that the data is set before the clock edge goes out to the device
@@ -266,7 +266,7 @@ module OctalSPI_quad #(
                 count_nxt = 0;
                 // we check the clock, because we always have to send two bytes
                 // on the first byte sent out, the clock is always low  ToDo: (issue #12) maybe better description, maybe unnecessary because the clock shift is not needed?
-                if (last_word_reg & bus_clock_p2_reg & count_reg == 0) begin
+                if (last_word_reg & bus_clock_p2_reg[0] & count_reg == 0) begin
                     state_nxt = CS_HIGH;
                 end
             end
@@ -318,7 +318,9 @@ module OctalSPI_quad #(
             SEND_ADDRESS: begin
                 for (channel = 0; channel < NUM_CHIPS; channel = channel + 1) begin
                     for (i = 0; i < CHIP_DATA_WIDTH; i = i + 1)
-                    data_out_nxt[(channel*CHIP_DATA_WIDTH)+i] = chip_address[{count_reg[1:0], i[2:0]}];
+                    data_out_nxt[(channel*CHIP_DATA_WIDTH)+i] = chip_address[{
+                        count_reg[1:0], i[2:0]
+                    }];
                 end
                 is_transfer_front_padded_nxt = i_address[WORD_LENGTH];
                 if (i_register_write & count_reg == 0) need_next_word_nxt = 1'b1;
@@ -340,7 +342,7 @@ module OctalSPI_quad #(
                 if (is_transfer_front_padded_reg & count_reg == 1) begin
                     data_strobe_out_nxt = 4'b1111;
                 end
-                else if (last_word_reg & ~bus_clock_p2_reg & count_reg == 0 & ~is_transfer_front_padded_reg) begin
+                else if (last_word_reg & ~bus_clock_p2_reg[0] & count_reg == 0 & ~is_transfer_front_padded_reg) begin
                     data_strobe_out_nxt = 4'b1111;
                 end else begin
                     is_transfer_front_padded_nxt = 0;

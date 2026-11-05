@@ -49,8 +49,8 @@ module OSPIController_quad #(
     output                      o_recieved_next_word,
 
     // SPI Pins
-    output o_bus_clock,
-    output o_bus_clock_neg,
+    output [3:0] o_bus_clock,
+    output [3:0] o_bus_clock_neg,
     output [3:0] o_chip_select_neg,
     output o_reset_neg,
 
