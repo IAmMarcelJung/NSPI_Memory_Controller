@@ -68,7 +68,7 @@ module Quad_Octal_Memory_Controller_apm_wrapper #(
 );
 
     integer test_number = 0;
-    wire bus_clock, bus_clock_neg;
+    wire [3:0] bus_clock, bus_clock_neg;
     wire spi_reset_neg;
     wire [STRB_WIDTH-1:0] chip_select_neg;
 
@@ -117,9 +117,9 @@ module Quad_Octal_Memory_Controller_apm_wrapper #(
             assign s_axi_rvalid = ctrl_rvalid;
             assign ctrl_rready = s_axi_rready;
         end else begin : gen_r_fifo
-            localparam integer W = ID_WIDTH + DATA_WIDTH + 3;
+            localparam integer W  = ID_WIDTH + DATA_WIDTH + 3;
             localparam integer PW = $clog2(R_FIFO_DEPTH) + 1;
-            reg [W-1:0] fifo_mem[0:R_FIFO_DEPTH-1];
+            reg [ W-1:0] fifo_mem[0:R_FIFO_DEPTH-1];
             reg [PW-1:0] count;
             reg [PW-2:0] wr_ptr, rd_ptr;
             wire push = ctrl_rvalid & ctrl_rready;
@@ -135,7 +135,7 @@ module Quad_Octal_Memory_Controller_apm_wrapper #(
                 if (pop) rd_ptr <= (rd_ptr == R_FIFO_DEPTH - 1) ? 0 : rd_ptr + 1;
                 count <= count + push - pop;
                 if (reset) begin
-                    count <= 0;
+                    count  <= 0;
                     wr_ptr <= 0;
                     rd_ptr <= 0;
                 end
@@ -146,13 +146,13 @@ module Quad_Octal_Memory_Controller_apm_wrapper #(
     OctalMemoryController_quad #(
         .ADDR_WIDTH(ADDR_WIDTH),
         .DATA_WIDTH(DATA_WIDTH),
-        .CHIP_TYPE (APMEMORY_CHIP),
+        .CHIP_TYPE(APMEMORY_CHIP),
         .MEMORY_RESET_CYCLES(20000),  // 400 us, the model needs no supply ramp
         .CLK_FREQ_MIN_HZ(CLK_FREQ_MIN_HZ),
         .CEM_MAX_CYCLES(CEM_MAX_CYCLES),
         .BUS_CLOCK_NEGEDGE(BUS_CLOCK_NEGEDGE)
     ) Controller (
-        .clk  (clk),
+        .clk (clk),
         .rstn(~reset),
 
         // SPI Pins
@@ -220,7 +220,7 @@ module Quad_Octal_Memory_Controller_apm_wrapper #(
                 .INIT_BYTE(INIT_BYTE)
             ) Memory (
                 .CE_n(chip_select_neg[index]),
-                .CLK(bus_clock),
+                .CLK(bus_clock[index]),
                 .RESET_n(spi_reset_neg),
                 .DQ(mem_data[index*BYTE+:BYTE]),
                 .DQS(mem_data_strobe[index])
