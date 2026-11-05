@@ -54,7 +54,7 @@ foreach chip {A B C D} {
         set fh [open $script_dir/Timing_RAM_$chip.xdc]
         set xdc [read $fh]
         close $fh
-        regsub -line {^create_generated_clock .*$} $xdc {create_generated_clock -name bus_clk -source [get_pins -of_objects [get_cells -hier -filter {NAME =~ *SPI_Transmitter/bus_clock_p2_reg_reg}] -filter {REF_PIN_NAME == C}] -divide_by 2 [get_ports o_spi_bus_clock]} xdc
+        regsub -line {^create_generated_clock .*$} $xdc {create_generated_clock -name bus_clk -source [get_pins -of_objects [get_cells -hier -filter {NAME =~ *SPI_Transmitter/bus_clock_p2_reg_reg*}] -filter {REF_PIN_NAME == C}] -divide_by 2 [get_ports o_spi_bus_clock]} xdc
         set fh [open $build_dir/Timing_RAM_$chip.xdc w]
         puts $fh $xdc
         close $fh

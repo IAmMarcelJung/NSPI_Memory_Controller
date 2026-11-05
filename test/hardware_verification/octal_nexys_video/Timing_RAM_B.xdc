@@ -47,11 +47,11 @@ set pcb_dq_max  0.69
 ##############################################################################
 
 # The register that drives o_spi_bus_clock. Check in the synthesized design:
-#   llength [get_cells -hier -filter {NAME =~ *SPI_Transmitter/bus_clock_neg_reg_reg}]  -> must be 1
+#   llength [get_cells -hier -filter {NAME =~ *SPI_Transmitter/bus_clock_neg_reg_reg*}]  -> must be 1
 
 # Divide-by-2, toggles on the sys_clk FALLING edges. The C pin of the negedge FF
 # is inverted, so its edges 1 3 5 are the falling edges of sys_clk.
-create_generated_clock -name bus_clk -source [get_pins -of_objects [get_cells -hier -filter {NAME =~ *SPI_Transmitter/bus_clock_neg_reg_reg}] -filter {REF_PIN_NAME == C}] -edges {1 3 5} [get_ports o_spi_bus_clock]
+create_generated_clock -name bus_clk -source [get_pins -of_objects [get_cells -hier -filter {NAME =~ *SPI_Transmitter/bus_clock_neg_reg_reg*}] -filter {REF_PIN_NAME == C}] -edges {1 3 5} [get_ports o_spi_bus_clock]
 
 
 ##############################################################################
